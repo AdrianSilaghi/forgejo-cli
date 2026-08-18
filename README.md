@@ -1,8 +1,10 @@
-# forgejo-cli
+# @danubedata/forgejo-cli
 
-An agent-first Forgejo CLI built with TypeScript and Bun. JSON is the default,
-all repository selection is deterministic, and persistent tokens stay in the
-operating-system credential store.
+An agent-first Forgejo CLI originally built for DanubeData's agentic
+engineering workflow. It is a general-purpose, free and open-source tool built
+with TypeScript and Bun. JSON is the default, repository selection is
+deterministic, and persistent tokens stay in the operating-system credential
+store.
 
 The initial `0.1` command surface covers authentication, repository detection,
 pull requests and reviews, issues, labels, milestones, releases, and streamed
@@ -26,15 +28,16 @@ Forgejo password and never creates an all-scope token.
 
 ## Install
 
-During development:
+Install the public npm package globally. The npm distribution requires Bun
+1.3.6 or newer at runtime and keeps the installed executable name short:
 
 ```bash
-bun install --frozen-lockfile
-bun run build
-bun link
+npm install --global @danubedata/forgejo-cli
+forgejo --version
 ```
 
-Build a standalone binary that does not require Bun at runtime:
+Alternatively, build or download a standalone binary that does not require Bun
+at runtime:
 
 ```bash
 bun run build:binary
@@ -224,13 +227,44 @@ The project follows TDD, strict TypeScript, immutable domain values, runtime
 validation of Forgejo responses, SOLID service boundaries, and an 80% minimum
 coverage gate.
 
+### Initial npm publication
+
+`@danubedata/forgejo-cli@0.1.0` is the one-time bootstrap release. npm requires
+the package to exist before its trusted GitHub publisher can be configured, so
+a DanubeData npm maintainer protected by two-factor authentication must run the
+manual bootstrap workflow from `main`. The workflow requires the exact package
+confirmation and exposes the existing `NPM_TOKEN` secret only to its final
+publish step. `NPM_TOKEN` must be a granular npm access token authorized to
+create and publish public packages in the `@danubedata` scope, with bypass 2FA
+enabled for non-interactive automation:
+
+```bash
+gh workflow run bootstrap-npm.yml \
+  --repo AdrianSilaghi/forgejo-cli \
+  --ref main \
+  -f confirmation='@danubedata/forgejo-cli@0.1.0'
+```
+
+After that initial publication, configure npm trusted publishing for package
+`@danubedata/forgejo-cli` with:
+
+- GitHub repository `AdrianSilaghi/forgejo-cli`;
+- workflow filename `release.yml`;
+- allowed action `npm publish`.
+
+Confirm one OIDC release works, then require two-factor authentication,
+disallow token-based publishing in the npm package settings, and delete the
+`NPM_TOKEN` GitHub secret. Future versions are released from signed annotated
+`v*` tags whose version exactly matches both `package.json` and the CLI's
+reported version.
+
 GitHub release builds fail closed until the repository variable
 `RELEASE_SIGNING_PUBLIC_KEY` contains the trusted armored GPG public key used
 to sign annotated `v*` tags. The workflow verifies that signature and requires
 the tagged commit to be reachable from `main` before producing artifacts. npm
-publication uses OIDC trusted publishing with provenance and no long-lived npm
-token; that publisher relationship must be configured on npm before the first
-release.
+ongoing publication uses OIDC trusted publishing with provenance and no
+long-lived npm token; that publisher relationship is configured immediately
+after the one-time bootstrap.
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting and
 [`docs/plans/2026-08-18-forgejo-cli-design.md`](docs/plans/2026-08-18-forgejo-cli-design.md)

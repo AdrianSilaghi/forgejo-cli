@@ -9,8 +9,67 @@ permissions:
   contents: read
 
 jobs:
+  validate:
+    name: Validate signed release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source and tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Verify trusted signed tag on main
+        env:
+          RELEASE_SIGNING_PUBLIC_KEY: ${{ vars.RELEASE_SIGNING_PUBLIC_KEY }}
+        run: |
+          test -n "${RELEASE_SIGNING_PUBLIC_KEY}"
+          printf '%s' "${RELEASE_SIGNING_PUBLIC_KEY}" | gpg --batch --import
+          git verify-tag "${GITHUB_REF_NAME}"
+          git merge-base --is-ancestor "${GITHUB_SHA}^{commit}" origin/main
+
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.6
+
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify source
+        run: bun run verify
+
+      - name: Match tag, package, and CLI versions
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p 'require("./package.json").version')"
+          cli_version="$(
+            bun src/bin/forgejo.ts --version |
+              node -e '
+                let source = "";
+                process.stdin.setEncoding("utf8");
+                process.stdin.on("data", (chunk) => { source += chunk; });
+                process.stdin.on("end", () => {
+                  const result = JSON.parse(source);
+                  if (result?.ok !== true || typeof result?.data?.version !== "string") process.exit(1);
+                  process.stdout.write(result.data.version);
+                });
+              '
+          )"
+          test "${tag_version}" = "${package_version}"
+          test "${cli_version}" = "${package_version}"
+
   build:
     name: Build ${{ matrix.name }}
+    needs: validate
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     permissions:
@@ -39,15 +98,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify trusted signed tag on main
-        env:
-          RELEASE_SIGNING_PUBLIC_KEY: ${{ vars.RELEASE_SIGNING_PUBLIC_KEY }}
-        run: |
-          test -n "${RELEASE_SIGNING_PUBLIC_KEY}"
-          printf '%s' "${RELEASE_SIGNING_PUBLIC_KEY}" | gpg --batch --import
-          git verify-tag "${GITHUB_REF_NAME}"
-          git merge-base --is-ancestor "${GITHUB_SHA}^{commit}" origin/main
-
       - name: Install Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -55,9 +105,6 @@ jobs:
 
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
-
-      - name: Verify source
-        run: bun run verify
 
       - name: Compile native binary
         run: >-
@@ -145,6 +192,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install npm trusted-publishing runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org/"
+          package-manager-cache: false
+
+      - name: Verify npm trusted-publishing runtime
+        run: |
+          npm_version="$(npm --version)"
+          node --version
+          npm --version
+          node -e '
+            const [major, minor, patch] = process.argv[1].split(".").map(Number);
+            const compatible = major > 11 ||
+              (major === 11 && (minor > 5 || (minor === 5 && patch >= 1)));
+            if (!compatible) throw new Error("npm " + process.argv[1] + " is below trusted-publishing minimum 11.5.1");
+          ' "${npm_version}"
+
       - name: Verify trusted signed tag on main
         env:
           RELEASE_SIGNING_PUBLIC_KEY: ${{ vars.RELEASE_SIGNING_PUBLIC_KEY }}
@@ -175,7 +241,7 @@ jobs:
           printf 'tarball=%s\n' "${package_tarball}" >> "${GITHUB_OUTPUT}"
 
       - name: Publish through npm trusted publishing
-        run: npm publish "${{ steps.package.outputs.tarball }}" --access public --provenance
+        run: npm publish "${{ steps.package.outputs.tarball }}" --access public --provenance --ignore-scripts
 
   publish:
     name: Finalize GitHub release

@@ -69,18 +69,21 @@ permissions.
 npm requires a package to exist before its trusted-publisher relationship can
 be configured. Version `0.1.0` therefore has a one-time bootstrap procedure:
 
-1. Run the complete verification and tarball smoke tests from a clean checkout.
-2. Publish `@danubedata/forgejo-cli@0.1.0` manually with public access using a
-   DanubeData npm maintainer account protected by 2FA.
-3. Configure the package's trusted GitHub publisher for:
+1. A maintainer manually dispatches `bootstrap-npm.yml` from the current
+   `main`, entering the exact package/version confirmation.
+2. The workflow runs the complete verification and tarball smoke tests, fails
+   closed unless npm returns `E404` for the exact version, and publishes with
+   the existing `NPM_TOKEN` exposed only to the final step. The secret must be
+   a granular token authorized for public publishing in the `@danubedata`
+   scope, with bypass 2FA enabled for automation.
+3. A maintainer configures the package's trusted GitHub publisher for:
    - repository: `AdrianSilaghi/forgejo-cli`;
    - workflow: `release.yml`;
    - permission: `npm publish`.
-4. Require 2FA and disallow token-based publishing after OIDC is confirmed.
-5. Use the automated signed-tag workflow for all subsequent versions.
-
-The repository documents this bootstrap, but does not automate it with a
-long-lived npm token.
+4. After OIDC is confirmed, require 2FA, disallow token-based publishing, and
+   delete the `NPM_TOKEN` GitHub secret.
+5. Use the automated signed-tag workflow with short-lived OIDC credentials for
+   all subsequent versions.
 
 ## Failure behavior
 
@@ -103,4 +106,3 @@ version equality guard, tarball smoke test, and publish-after-staging order.
 The full release-readiness gate remains formatting, linting, strict TypeScript,
 unit/integration/E2E tests with at least 80% coverage, build, dependency audit,
 native-binary smoke test, and npm-tarball inspection.
-
