@@ -1,6 +1,6 @@
 {
   "name": "@danubedata/forgejo-cli",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Agent-first Forgejo CLI built for DanubeData workflows",
   "author": "Adrian Silaghi",
   "contributors": [
