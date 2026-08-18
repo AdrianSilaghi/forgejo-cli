@@ -5,10 +5,10 @@ Status: Approved
 
 ## Objective
 
-Build a standalone, agent-first Forgejo CLI in TypeScript for macOS and Linux.
-The first release covers authentication, repository detection, pull requests,
-reviews, issues, labels, milestones, and releases. It is distributed as both an
-npm package and signed standalone binaries.
+Build a standalone, agent-first Forgejo CLI in TypeScript on Bun for macOS and
+Linux. The first release covers authentication, repository detection, pull
+requests, reviews, issues, labels, milestones, and releases. It is distributed
+as both an npm package and signed standalone binaries compiled with Bun.
 
 ## Architecture
 
@@ -30,6 +30,22 @@ The main components are:
 - Forgejo HTTP client and domain services.
 - Versioned JSON response and error presenters.
 - Platform credential-store adapters.
+
+Implementation follows SOLID principles:
+
+- Each command handler has one orchestration responsibility.
+- Domain services expose narrow, operation-focused interfaces.
+- Commands depend on service abstractions rather than HTTP, Git, files, or
+  credential-store implementations.
+- The hardened HTTP client implements a small `ForgejoApi` port used by domain
+  services.
+- Configuration, credentials, Git discovery, presentation, and transport are
+  independently replaceable adapters.
+- New command behavior is added through new handlers/services rather than
+  conditional growth in a central dispatcher.
+
+All data structures are treated as immutable values; transformations produce
+new objects instead of mutating inputs or Forgejo response payloads.
 
 ## Command Surface
 
@@ -60,8 +76,11 @@ All content can be supplied non-interactively through flags, files, or stdin.
 For example, `--body`, `--body-file`, and `--body-stdin` are mutually exclusive.
 The CLI never opens an editor automatically.
 
-Destructive commands require `--yes`. Missing confirmation returns a structured
-error rather than prompting.
+Destructive commands require an explicit repository, a stable server-side
+resource ID, `--yes`, and a target-derived confirmation value such as
+`--confirm owner/name#release:123`. Name-only deletion first resolves to exactly
+one immutable ID. Missing or mismatched confirmation returns a structured error
+rather than prompting.
 
 ## Agent-First Output Contract
 
@@ -75,10 +94,14 @@ Successful responses use a versioned envelope:
 {
   "schema_version": "1",
   "ok": true,
-  "data": {},
-  "pagination": null
+  "data": {}
 }
 ```
+
+List command data contains a stable `{ "items": [], "pagination": {} }`
+object. Keeping pagination beside the affected collection avoids a second
+top-level envelope variant while preserving one response schema for every
+command.
 
 Failures use stable symbolic error codes:
 
@@ -121,8 +144,10 @@ with `GET /api/v1/user`, records the authenticated identity, and persists it onl
 after successful validation. The CLI never requests or stores a Forgejo account
 password.
 
-`FORGEJO_TOKEN` is the non-persistent override for CI and ephemeral agents. It
-remains bound to the current repository's exact origin or an explicit `--host`.
+`FORGEJO_TOKEN` is the non-persistent override for CI and ephemeral agents. An
+environment token always requires an explicit `--host` or `FORGEJO_HOST`; a Git
+remote alone cannot choose where an environment token is sent. The explicit
+origin must match the operation's resolved repository origin.
 
 Forgejo does not reliably expose the current PAT's metadata to that same PAT.
 The CLI therefore does not claim to verify scopes it cannot inspect. It
@@ -143,8 +168,31 @@ The HTTP client:
 - Redacts authorization headers, tokens, secret fields, and request bodies from
   diagnostics.
 
+Origin canonicalization is specified and table-tested. DNS names are converted
+to ASCII, lowercased, and stripped of default ports. Explicit non-default ports
+remain part of the origin. Userinfo, trailing-dot hosts, control characters,
+queries, fragments, encoded path separators, and parent-path segments are
+rejected. IPv6 literals must be bracketed. HTTPS, SSH URL, and scp-style Git
+remotes are parsed locally without contacting a remote. SSH origins select an
+already configured HTTPS origin for the same host; they never guess an API port.
+
+Redirect handling is limited to three hops. Same-origin means an exact match of
+normalized scheme, host, and effective port. HTTPS-to-HTTP downgrades fail.
+Unsafe methods and request bodies are never rewritten or replayed across a
+redirect.
+
 Debug output may contain request IDs, HTTP methods, sanitized paths, timing, and
-status codes. It never contains credentials or bodies.
+status codes. It never contains credentials or bodies. The same central
+redactor applies to JSON error details, exception serialization, config output,
+remote URLs, query parameters, and every stdout/stderr path.
+
+Git discovery is strictly local and read-only. It never contacts a remote,
+executes hooks, invokes credential helpers, or silently applies `insteadOf`
+rewrites. Remote URLs containing credentials are rejected and redacted.
+
+Credential-store adapters fail closed. There is no automatic plaintext
+fallback. Metadata configuration is written with owner-only permissions where
+the platform supports them.
 
 ## Reliability
 
@@ -178,18 +226,32 @@ process-argument leakage, secret redaction, and credential persistence.
 Credential-store tests use isolated adapters and never touch a developer's real
 keychain.
 
+Destructive-command regressions require an explicit repository, immutable
+resource ID, `--yes`, and the exact target-derived confirmation value. Login
+regressions enforce bounded stdin input, reject token-bearing argv forms, and
+prove that failed or interrupted validation persists nothing.
+
 JSON schemas are versioned and protected with contract tests. Additive fields
 are permitted within schema version 1; breaking changes require a new schema
 version.
 
 ## Distribution
 
-The canonical TypeScript source produces:
+The canonical TypeScript source uses Bun as its development runtime, test
+runner, bundler, and standalone compiler. It produces:
 
-- An npm package for development and Node.js environments.
-- Signed standalone binaries for macOS and Linux.
+- An npm package for development and compatible JavaScript environments.
+- Standalone binaries for macOS and Linux, cryptographically signed through
+  GitHub's Sigstore-backed build-provenance attestations.
 
-Releases originate from signed tags. CI publishes checksums, signatures,
-provenance, and an SBOM. Each artifact is installed into a clean environment and
-smoke-tested before publication. The CLI has no automatic self-update behavior,
-allowing agents to pin and verify an exact version.
+Releases originate from signed tags through a protected, least-privilege CI
+identity. Workflow dependencies are pinned by immutable digest. npm publication
+uses trusted publishing/provenance rather than a long-lived publish token. CI
+publishes checksums, signed provenance attestations, and an SBOM, then verifies
+that the provenance subject and installed artifact digests match. Native macOS
+Developer ID signing/notarization requires separately provisioned Apple
+credentials and is not implied by the portable Sigstore verification path.
+Install scripts are forbidden unless separately audited and approved. Each
+artifact is installed into a clean environment and smoke-tested before
+publication. The CLI has no automatic self-update behavior, allowing agents to
+pin and verify an exact version.

@@ -1,0 +1,32 @@
+# Dependencies and package-manager state
+node_modules/
+.npm/
+.npmrc
+
+# Build, test, and packaging output
+dist/
+coverage/
+artifacts/
+reports/
+*.tgz
+*.tsbuildinfo
+
+# Local environment and secret material
+.env
+.env.*
+!.env.example
+.direnv/
+.secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Temporary and local tool state
+.cache/
+.tmp/
+tmp/
+*.log
+.DS_Store
+.idea/
+.vscode/
