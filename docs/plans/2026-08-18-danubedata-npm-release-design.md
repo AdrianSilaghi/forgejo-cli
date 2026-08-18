@@ -67,11 +67,12 @@ permissions.
 ## Initial publication
 
 npm requires a package to exist before its trusted-publisher relationship can
-be configured. Version `0.1.0` therefore has a one-time bootstrap procedure:
+be configured. Version `0.0.1` therefore has a one-time bootstrap procedure:
 
 1. A maintainer manually dispatches `bootstrap-npm.yml` from the current
    `main`, entering the exact package/version confirmation.
-2. The workflow runs the complete verification and tarball smoke tests, fails
+2. The protected `npm-bootstrap` environment requires maintainer approval. The
+   workflow then runs the complete verification and tarball smoke tests, fails
    closed unless npm returns `E404` for the exact version, and publishes with
    the existing `NPM_TOKEN` exposed only to the final step. The secret must be
    a granular token authorized for public publishing in the `@danubedata`
@@ -80,9 +81,12 @@ be configured. Version `0.1.0` therefore has a one-time bootstrap procedure:
    - repository: `AdrianSilaghi/forgejo-cli`;
    - workflow: `release.yml`;
    - permission: `npm publish`.
-4. After OIDC is confirmed, require 2FA, disallow token-based publishing, and
-   delete the `NPM_TOKEN` GitHub secret.
-5. Use the automated signed-tag workflow with short-lived OIDC credentials for
+4. Require 2FA, disallow token-based publishing, and delete the `NPM_TOKEN`
+   GitHub secret after trusted publishing is configured.
+5. Push the signed `v0.0.1` tag. The release workflow accepts the bootstrap
+   package only when the registry `dist.integrity` exactly matches the freshly
+   packed artifact, then publishes the GitHub Release.
+6. Use the automated signed-tag workflow with short-lived OIDC credentials for
    all subsequent versions.
 
 ## Failure behavior
@@ -93,6 +97,8 @@ be configured. Version `0.1.0` therefore has a one-time bootstrap procedure:
 - A tag/package version mismatch blocks npm publication.
 - A package tarball whose installed CLI fails the JSON contract blocks npm
   publication.
+- An existing npm version whose registry integrity differs from the local
+  release artifact blocks the GitHub Release.
 - Any npm failure leaves the GitHub Release as a draft rather than presenting a
   partially published release as complete.
 

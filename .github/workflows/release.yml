@@ -24,9 +24,18 @@ jobs:
       - name: Verify trusted signed tag on main
         env:
           RELEASE_SIGNING_PUBLIC_KEY: ${{ vars.RELEASE_SIGNING_PUBLIC_KEY }}
+          EXPECTED_RELEASE_SIGNING_FINGERPRINT: C14BAA285E34DFFC2347A29513C202A996DC8541
         run: |
           test -n "${RELEASE_SIGNING_PUBLIC_KEY}"
-          printf '%s' "${RELEASE_SIGNING_PUBLIC_KEY}" | gpg --batch --import
+          key_file="$(mktemp)"
+          printf '%s' "${RELEASE_SIGNING_PUBLIC_KEY}" > "${key_file}"
+          mapfile -t primary_fingerprints < <(
+            gpg --batch --with-colons --show-keys "${key_file}" |
+              awk -F: '$1 == "pub" { want = 1; next } want && $1 == "fpr" { print $10; want = 0 }'
+          )
+          test "${#primary_fingerprints[@]}" = 1
+          test "${primary_fingerprints[0]}" = "${EXPECTED_RELEASE_SIGNING_FINGERPRINT}"
+          gpg --batch --import "${key_file}"
           git verify-tag "${GITHUB_REF_NAME}"
           git merge-base --is-ancestor "${GITHUB_SHA}^{commit}" origin/main
 
@@ -214,9 +223,18 @@ jobs:
       - name: Verify trusted signed tag on main
         env:
           RELEASE_SIGNING_PUBLIC_KEY: ${{ vars.RELEASE_SIGNING_PUBLIC_KEY }}
+          EXPECTED_RELEASE_SIGNING_FINGERPRINT: C14BAA285E34DFFC2347A29513C202A996DC8541
         run: |
           test -n "${RELEASE_SIGNING_PUBLIC_KEY}"
-          printf '%s' "${RELEASE_SIGNING_PUBLIC_KEY}" | gpg --batch --import
+          key_file="$(mktemp)"
+          printf '%s' "${RELEASE_SIGNING_PUBLIC_KEY}" > "${key_file}"
+          mapfile -t primary_fingerprints < <(
+            gpg --batch --with-colons --show-keys "${key_file}" |
+              awk -F: '$1 == "pub" { want = 1; next } want && $1 == "fpr" { print $10; want = 0 }'
+          )
+          test "${#primary_fingerprints[@]}" = 1
+          test "${primary_fingerprints[0]}" = "${EXPECTED_RELEASE_SIGNING_FINGERPRINT}"
+          gpg --batch --import "${key_file}"
           git verify-tag "${GITHUB_REF_NAME}"
           git merge-base --is-ancestor "${GITHUB_SHA}^{commit}" origin/main
 
@@ -228,20 +246,97 @@ jobs:
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
 
+      - name: Build npm package
+        run: bun run build
+
       - name: Verify tag and package versions match
         run: test "v$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME}"
 
       - name: Pack, install, and smoke-test npm artifact
         id: package
         run: |
-          package_tarball="$(npm pack --silent | tail -n 1)"
+          package_name="$(node -p 'require("./package.json").name')"
+          package_version="$(node -p 'require("./package.json").version')"
+          package_spec="${package_name}@${package_version}"
+          pack_json="$(npm pack --json --ignore-scripts)"
+          package_tarball="$(
+            node -e '
+              const [entry] = JSON.parse(process.argv[1]);
+              if (typeof entry?.filename !== "string") process.exit(1);
+              process.stdout.write(entry.filename);
+            ' "${pack_json}"
+          )"
+          package_integrity="$(
+            node -e '
+              const [entry] = JSON.parse(process.argv[1]);
+              if (typeof entry?.["integrity"] !== "string") process.exit(1);
+              process.stdout.write(entry["integrity"]);
+            ' "${pack_json}"
+          )"
           smoke_root="$(mktemp -d)"
           npm install --prefix "${smoke_root}" --ignore-scripts "${GITHUB_WORKSPACE}/${package_tarball}"
           bun run smoke:artifact -- "${smoke_root}/node_modules/.bin/forgejo"
-          printf 'tarball=%s\n' "${package_tarball}" >> "${GITHUB_OUTPUT}"
+
+          should_publish=true
+          view_error="${RUNNER_TEMP}/npm-view-error.log"
+          if view_json="$(
+            npm view "${package_spec}" dist.integrity --json \
+              --registry https://registry.npmjs.org/ 2>"${view_error}"
+          )"; then
+            published_integrity="$(
+              node -e '
+                const integrity = JSON.parse(process.argv[1]);
+                if (typeof integrity !== "string") process.exit(1);
+                process.stdout.write(integrity);
+              ' "${view_json}"
+            )"
+            if ! test "${published_integrity}" = "${package_integrity}"; then
+              echo "The published npm artifact does not match this release." >&2
+              exit 1
+            fi
+            should_publish=false
+            echo "The exact npm artifact already exists; publication is already complete."
+          elif ! grep -q "E404" "${view_error}"; then
+            echo "npm availability could not be verified safely." >&2
+            exit 1
+          fi
+
+          {
+            printf 'tarball=%s\n' "${package_tarball}"
+            printf 'integrity=%s\n' "${package_integrity}"
+            printf 'package_spec=%s\n' "${package_spec}"
+            printf 'should_publish=%s\n' "${should_publish}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Publish through npm trusted publishing
+        if: ${{ steps.package.outputs.should_publish == 'true' }}
         run: npm publish "${{ steps.package.outputs.tarball }}" --access public --provenance --ignore-scripts
+
+      - name: Verify the newly published npm artifact
+        if: ${{ steps.package.outputs.should_publish == 'true' }}
+        env:
+          EXPECTED_INTEGRITY: ${{ steps.package.outputs.integrity }}
+          PACKAGE_SPEC: ${{ steps.package.outputs.package_spec }}
+        run: |
+          published_integrity=""
+          for attempt in 1 2 3 4 5 6; do
+            if view_json="$(npm view "${PACKAGE_SPEC}" dist.integrity --json)"; then
+              published_integrity="$(
+                node -e '
+                  const integrity = JSON.parse(process.argv[1]);
+                  if (typeof integrity !== "string") process.exit(1);
+                  process.stdout.write(integrity);
+                ' "${view_json}"
+              )"
+              break
+            fi
+            if test "${attempt}" = 6; then
+              echo "The published npm artifact integrity could not be verified." >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          test "${published_integrity}" = "${EXPECTED_INTEGRITY}"
 
   publish:
     name: Finalize GitHub release

@@ -189,8 +189,8 @@ operation is capped at 10,000 items.
 ## Releases
 
 ```bash
-forgejo release create --tag v0.1.0 --target main --body-file ./CHANGELOG.md
-forgejo release view v0.1.0 --tag
+forgejo release create --tag v0.0.1 --target main --body-file ./CHANGELOG.md
+forgejo release view v0.0.1 --tag
 forgejo release upload 42 ./artifacts/forgejo-linux-x64 \
   --name forgejo-linux-x64
 ```
@@ -229,20 +229,21 @@ coverage gate.
 
 ### Initial npm publication
 
-`@danubedata/forgejo-cli@0.1.0` is the one-time bootstrap release. npm requires
+`@danubedata/forgejo-cli@0.0.1` is the one-time bootstrap release. npm requires
 the package to exist before its trusted GitHub publisher can be configured, so
 a DanubeData npm maintainer protected by two-factor authentication must run the
 manual bootstrap workflow from `main`. The workflow requires the exact package
-confirmation and exposes the existing `NPM_TOKEN` secret only to its final
-publish step. `NPM_TOKEN` must be a granular npm access token authorized to
-create and publish public packages in the `@danubedata` scope, with bypass 2FA
-enabled for non-interactive automation:
+confirmation plus approval through the protected `npm-bootstrap` environment,
+and exposes the existing `NPM_TOKEN` secret only to its final publish step.
+`NPM_TOKEN` must be a granular npm access token authorized to create and
+publish public packages in the `@danubedata` scope, with bypass 2FA enabled for
+non-interactive automation:
 
 ```bash
 gh workflow run bootstrap-npm.yml \
   --repo AdrianSilaghi/forgejo-cli \
   --ref main \
-  -f confirmation='@danubedata/forgejo-cli@0.1.0'
+  -f confirmation='@danubedata/forgejo-cli@0.0.1'
 ```
 
 After that initial publication, configure npm trusted publishing for package
@@ -252,11 +253,13 @@ After that initial publication, configure npm trusted publishing for package
 - workflow filename `release.yml`;
 - allowed action `npm publish`.
 
-Confirm one OIDC release works, then require two-factor authentication,
+After trusted publishing is configured, require two-factor authentication,
 disallow token-based publishing in the npm package settings, and delete the
-`NPM_TOKEN` GitHub secret. Future versions are released from signed annotated
-`v*` tags whose version exactly matches both `package.json` and the CLI's
-reported version.
+`NPM_TOKEN` GitHub secret. The signed `v0.0.1` release verifies that the npm
+artifact created by bootstrap has the exact same integrity before it skips the
+already-completed publication. Future versions publish through OIDC from signed
+annotated `v*` tags whose version exactly matches both `package.json` and the
+CLI's reported version.
 
 GitHub release builds fail closed until the repository variable
 `RELEASE_SIGNING_PUBLIC_KEY` contains the trusted armored GPG public key used

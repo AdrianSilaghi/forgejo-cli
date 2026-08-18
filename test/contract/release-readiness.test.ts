@@ -92,6 +92,7 @@ describe("release readiness", () => {
 
     expect(manifest).toMatchObject({
       name: "@danubedata/forgejo-cli",
+      version: "0.0.1",
       license: "MIT",
       bin: { forgejo: "dist/bin/forgejo.js" },
       repository: {
@@ -114,10 +115,11 @@ describe("release readiness", () => {
     expect(prose).toMatch(/originally built for DanubeData(?:'s)? .* workflow/i);
     expect(readme).toContain("npm install --global @danubedata/forgejo-cli");
     expect(readme).toMatch(/(?:initial publication|bootstrap)/i);
-    expect(readme).toContain("@danubedata/forgejo-cli@0.1.0");
+    expect(readme).toContain("@danubedata/forgejo-cli@0.0.1");
     expect(readme).toContain("AdrianSilaghi/forgejo-cli");
     expect(readme).toMatch(/gh workflow run\s+bootstrap-npm\.yml/);
-    expect(readme).toContain("@danubedata/forgejo-cli@0.1.0");
+    expect(readme).toContain("@danubedata/forgejo-cli@0.0.1");
+    expect(readme).not.toContain("0.1.0");
     expect(readme).toContain("NPM_TOKEN");
     expect(prose).toMatch(/NPM_TOKEN.*granular.*@danubedata/i);
     expect(prose).toMatch(/bypass (?:2FA|two-factor)/i);
@@ -161,6 +163,7 @@ describe("release readiness", () => {
 
   it("keeps the signed-tag, OIDC, staged-release, and tarball publication gates", async () => {
     const workflow = await repositoryFile(".github/workflows/release.yml");
+    const validate = mappingBlock(workflow, "validate");
     const build = mappingBlock(workflow, "build");
     const stageRelease = mappingBlock(workflow, "stage-release");
     const publishNpm = mappingBlock(workflow, "publish-npm");
@@ -171,6 +174,8 @@ describe("release readiness", () => {
     expect(occurrences(workflow, /git verify-tag/)).toBeGreaterThanOrEqual(2);
     expect(occurrences(workflow, /git merge-base\s+--is-ancestor/)).toBeGreaterThanOrEqual(2);
     expect(occurrences(workflow, /origin\/main/)).toBeGreaterThanOrEqual(2);
+    expect(validate).toContain("C14BAA285E34DFFC2347A29513C202A996DC8541");
+    expect(validate).toMatch(/gpg\s+--batch[^\n]*--show-keys/);
 
     expect(stageRelease).toMatch(/needs\s*:\s*(?:\[\s*)?build/);
     expect(stageRelease).toContain("--draft");
@@ -185,6 +190,48 @@ describe("release readiness", () => {
 
     expect(publish).toMatch(/needs\s*:\s*(?:\[\s*)?publish-npm/);
     expect(publish).toMatch(/gh release edit[\s\S]*--draft=false/);
+  });
+
+  it("skips an existing npm version only when its published integrity exactly matches", async () => {
+    const workflow = await repositoryFile(".github/workflows/release.yml");
+    const publishNpm = mappingBlock(workflow, "publish-npm");
+    const publishStep = sequenceItemContaining(publishNpm, "npm publish");
+    const buildArtifact = publishNpm.indexOf("bun run build");
+    const packArtifact = publishNpm.search(/npm\s+pack[^\n]*--json/);
+    const integrityComparison = publishNpm.search(
+      /(?:test|\[\[)[^\n]*published_integrity[^\n]*(?:=|==)[^\n]*package_integrity/,
+    );
+    const matchingVersionSkip = publishNpm
+      .slice(Math.max(integrityComparison, 0))
+      .search(/(?:should_)?publish=(?:false|0)/);
+
+    expect(publishNpm).toMatch(/npm\s+pack[^\n]*--json/);
+    expect(buildArtifact).toBeGreaterThanOrEqual(0);
+    expect(packArtifact).toBeGreaterThan(buildArtifact);
+    expect(publishNpm).toMatch(/package_integrity/);
+    expect(publishNpm).toMatch(/["']integrity["']/);
+    expect(publishNpm).toMatch(
+      /package_spec=[^\n]*(?:package\.json|package_name[^\n]*package_version)/,
+    );
+    expect(publishNpm).toMatch(
+      /npm\s+view[^\n]*(?:package_spec|@danubedata\/forgejo-cli)[^\n]*dist\.integrity/,
+    );
+    expect(publishNpm).toContain("published_integrity");
+    expect(publishNpm).toMatch(
+      /(?:test|\[\[)[^\n]*published_integrity[^\n]*(?:=|==)[^\n]*package_integrity/,
+    );
+    expect(publishNpm).toMatch(/(?:should_)?publish=(?:false|0)/);
+    expect(integrityComparison).toBeGreaterThanOrEqual(0);
+    expect(matchingVersionSkip).toBeGreaterThanOrEqual(0);
+    expect(publishNpm).toContain("E404");
+    expect(occurrences(publishNpm, /exit\s+1/)).toBeGreaterThanOrEqual(2);
+    expect(publishNpm).toMatch(/printf[^\n]*(?:should_)?publish/);
+    expect(publishNpm).toContain("GITHUB_OUTPUT");
+
+    expect(publishStep).toMatch(
+      /if\s*:\s*\$\{\{\s*steps\.package\.outputs\.(?:should_)?publish\s*==\s*["']true["']\s*\}\}/,
+    );
+    expect(publishStep).toMatch(/npm\s+publish[^\n]*--access public[^\n]*--provenance/);
   });
 
   it("validates the tag, package, and CLI versions before building release artifacts", async () => {
@@ -217,14 +264,16 @@ describe("one-time npm bootstrap workflow", () => {
     const triggers = mappingBlock(workflow, "on");
     const dispatch = mappingBlock(workflow, "workflow_dispatch");
     const confirmation = mappingBlock(workflow, "confirmation");
+    const bootstrap = mappingBlock(workflow, "bootstrap");
 
     expect(triggers).toContain("workflow_dispatch");
     expect(triggers).not.toMatch(/\b(?:push|pull_request|schedule|workflow_call)\s*:/);
     expect(dispatch).toContain("confirmation:");
     expect(confirmation).toMatch(/required\s*:\s*true/);
-    expect(confirmation).toContain("@danubedata/forgejo-cli@0.1.0");
+    expect(confirmation).toContain("@danubedata/forgejo-cli@0.0.1");
     expect(workflow).toMatch(/CONFIRMATION\s*:\s*\$\{\{\s*inputs\.confirmation\s*\}\}/);
-    expect(workflow).toMatch(/test[^\n]*CONFIRMATION[^\n]*=[^\n]*@danubedata\/forgejo-cli@0\.1\.0/);
+    expect(workflow).toMatch(/test[^\n]*CONFIRMATION[^\n]*=[^\n]*@danubedata\/forgejo-cli@0\.0\.1/);
+    expect(workflow).not.toContain("0.1.0");
 
     expect(scalarMappingEntries(mappingBlock(workflow, "permissions"))).toEqual([
       "contents:read",
@@ -236,9 +285,10 @@ describe("one-time npm bootstrap workflow", () => {
     expect(workflow).toMatch(
       /test[^\n]*(?:GITHUB_SHA|git rev-parse HEAD)[^\n]*=[^\n]*git rev-parse origin\/main/,
     );
+    expect(bootstrap).toMatch(/environment\s*:\s*["']?npm-bootstrap["']?(?:\s|#|$)/);
   });
 
-  it("pins its runtimes and fails closed unless exactly version 0.1.0 is unpublished", async () => {
+  it("pins its runtimes and fails closed unless exactly version 0.0.1 is unpublished", async () => {
     const workflow = await optionalRepositoryFile(".github/workflows/bootstrap-npm.yml");
     const availabilityStep = sequenceItemContaining(workflow, "npm view");
 
@@ -253,10 +303,10 @@ describe("one-time npm bootstrap workflow", () => {
     expect(workflow).toContain("bun install --frozen-lockfile");
     expect(workflow).toContain("bun run verify");
     expect(workflow).toMatch(/package\.json/);
-    expect(workflow).toMatch(/test[^\n]*(?:package_version|package\.json)[^\n]*=[^\n]*0\.1\.0/);
+    expect(workflow).toMatch(/test[^\n]*(?:package_version|package\.json)[^\n]*=[^\n]*0\.0\.1/);
 
     expect(availabilityStep).toMatch(
-      /npm\s+view\s+["']?@danubedata\/forgejo-cli@0\.1\.0["']?\s+version/,
+      /npm\s+view\s+["']?@danubedata\/forgejo-cli@0\.0\.1["']?\s+version/,
     );
     expect(availabilityStep).toContain("E404");
     expect(occurrences(availabilityStep, /exit\s+1/)).toBeGreaterThanOrEqual(2);
