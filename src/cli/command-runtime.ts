@@ -1,6 +1,5 @@
-import type { Readable } from "node:stream";
-
 import type { AuthenticatedUser } from "../auth/auth-service.js";
+import type { TokenReadOptions } from "../auth/token-input.js";
 import type { AccountMetadata } from "../config/config-repository.js";
 import type { IssueOperations } from "../forgejo/issue-service.js";
 import type { LabelOperations } from "../forgejo/label-service.js";
@@ -34,7 +33,7 @@ export interface RepositoryCommandRuntime<T extends Readonly<Record<string, unkn
 }
 
 export interface AuthCommandRuntime {
-  readonly stdin: Readable;
+  readToken(options: TokenReadOptions): Promise<string>;
   login(input: {
     host: string;
     token: string;

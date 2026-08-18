@@ -1,10 +1,14 @@
-import { Readable } from "node:stream";
-
 import { describe, expect, it } from "bun:test";
 
 import type { AuthService } from "../../../src/auth/auth-service.js";
 import type { CredentialStore } from "../../../src/auth/credential-store.js";
 import { AuthCommandRuntimeAdapter } from "../../../src/cli/auth-command-runtime.js";
+
+function tokenInput(token = "fixture") {
+  return {
+    read: async () => token,
+  };
+}
 
 describe("AuthCommandRuntimeAdapter", () => {
   it("delegates login and list without changing their values", async () => {
@@ -25,7 +29,7 @@ describe("AuthCommandRuntimeAdapter", () => {
       auth,
       credentials: {} as CredentialStore,
       environment: {},
-      stdin: Readable.from([]),
+      tokenInput: tokenInput(),
     });
 
     await expect(
@@ -33,6 +37,25 @@ describe("AuthCommandRuntimeAdapter", () => {
     ).resolves.toBe(loginResult);
     await expect(runtime.list()).resolves.toBe(accounts);
     expect(calls).toEqual([{ host: "https://code.example.test", token: "fixture" }]);
+  });
+
+  it("delegates automatic and piped-only token reads to the secure input port", async () => {
+    const reads: unknown[] = [];
+    const runtime = new AuthCommandRuntimeAdapter({
+      auth: {} as AuthService,
+      credentials: {} as CredentialStore,
+      environment: {},
+      tokenInput: {
+        read: async (options: unknown) => {
+          reads.push(options);
+          return "fixture";
+        },
+      },
+    });
+
+    await expect(runtime.readToken({ pipedOnly: false })).resolves.toBe("fixture");
+    await expect(runtime.readToken({ pipedOnly: true })).resolves.toBe("fixture");
+    expect(reads).toEqual([{ pipedOnly: false }, { pipedOnly: true }]);
   });
 
   it("reports credential presence without returning credential values", async () => {
@@ -52,7 +75,7 @@ describe("AuthCommandRuntimeAdapter", () => {
       auth,
       credentials,
       environment: {},
-      stdin: Readable.from([]),
+      tokenInput: tokenInput(),
     });
 
     const status = await runtime.status({ host: "https://code.example.test" });
@@ -89,7 +112,7 @@ describe("AuthCommandRuntimeAdapter", () => {
       auth,
       credentials: {} as CredentialStore,
       environment: {},
-      stdin: Readable.from([]),
+      tokenInput: tokenInput(),
     });
 
     await expect(runtime.logout({ host: "https://code.example.test" })).resolves.toEqual({
@@ -116,7 +139,7 @@ describe("AuthCommandRuntimeAdapter", () => {
         FORGEJO_HOST: "https://code.example.test",
         FORGEJO_TOKEN: "environment-token",
       },
-      stdin: Readable.from([]),
+      tokenInput: tokenInput(),
     });
 
     await expect(runtime.status({})).resolves.toEqual({
@@ -137,7 +160,7 @@ describe("AuthCommandRuntimeAdapter", () => {
       auth: { list: async () => [] } as unknown as AuthService,
       credentials: {} as CredentialStore,
       environment: { FORGEJO_TOKEN: "environment-token" },
-      stdin: Readable.from([]),
+      tokenInput: tokenInput(),
     });
 
     await expect(runtime.status({})).rejects.toMatchObject({ code: "not_authenticated" });
@@ -162,7 +185,7 @@ describe("AuthCommandRuntimeAdapter", () => {
         FORGEJO_HOST: "https://one.example",
         FORGEJO_TOKEN: "environment-token",
       },
-      stdin: Readable.from([]),
+      tokenInput: tokenInput(),
     });
 
     await expect(runtime.status({ host: "https://two.example" })).resolves.toEqual({
@@ -194,7 +217,7 @@ describe("AuthCommandRuntimeAdapter", () => {
       } as unknown as AuthService,
       credentials: {} as CredentialStore,
       environment: {},
-      stdin: Readable.from([]),
+      tokenInput: tokenInput(),
     });
 
     await expect(

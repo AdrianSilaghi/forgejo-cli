@@ -52,7 +52,13 @@ gh attestation verify ./forgejo-linux-x64 \
 
 ## Authenticate
 
-Login with a token from stdin:
+Login interactively with a hidden token prompt:
+
+```bash
+forgejo auth login --host https://git.example.com
+```
+
+Agents and scripts can pipe the token through stdin:
 
 ```bash
 printf '%s' "$FORGEJO_PAT" | forgejo auth login \

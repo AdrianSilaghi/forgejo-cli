@@ -3,6 +3,7 @@ import type { Readable } from "node:stream";
 import { AccountResolver, type ForgejoEnvironment } from "../auth/account-resolver.js";
 import { AuthService } from "../auth/auth-service.js";
 import { PlatformCredentialStore } from "../auth/platform-credential-store.js";
+import { ReadlineHiddenTokenPrompt, SecureTokenInput } from "../auth/token-input.js";
 import { BunAssetFileSource } from "../cli/asset-file.js";
 import { AuthCommandRuntimeAdapter } from "../cli/auth-command-runtime.js";
 import { buildProgram, type BuildProgramDependencies } from "../cli/build-program.js";
@@ -45,6 +46,10 @@ export function createApplicationDependencies(
     ...(options.environment ?? process.env),
   });
   const stdin = options.stdin ?? process.stdin;
+  const tokenInput = new SecureTokenInput({
+    stream: stdin,
+    prompt: new ReadlineHiddenTokenPrompt({ input: stdin, output: process.stderr }),
+  });
   const config = new ConfigRepository(resolveConfigPath(environment));
   const credentials = new PlatformCredentialStore();
   const auth = new AuthService({
@@ -68,7 +73,7 @@ export function createApplicationDependencies(
   const files = new BunAssetFileSource();
 
   return Object.freeze({
-    auth: new AuthCommandRuntimeAdapter({ auth, credentials, environment, stdin }),
+    auth: new AuthCommandRuntimeAdapter({ auth, credentials, environment, tokenInput }),
     repository: Object.freeze({ resolve, detect }),
     pullRequests: Object.freeze({ resolve, stdin }),
     issues: Object.freeze({ resolve, stdin }),

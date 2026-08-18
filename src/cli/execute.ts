@@ -1,4 +1,4 @@
-import { type Command, CommanderError } from "commander";
+import { type Command, CommanderError, type OutputConfiguration } from "commander";
 
 import { CliError, type ErrorCode } from "../core/errors.js";
 import { failure, success } from "../core/result.js";
@@ -64,22 +64,27 @@ function usesHumanOutput(program: Command): boolean {
   return (program.optsWithGlobals() as { human?: boolean }).human === true;
 }
 
+function configureCommandTree(program: Command, output: OutputConfiguration): void {
+  program
+    .exitOverride()
+    .showHelpAfterError(false)
+    .showSuggestionAfterError(false)
+    .configureOutput(output);
+  for (const command of program.commands) configureCommandTree(command, output);
+}
+
 export async function executeProgram(
   program: Command,
   argv: readonly string[],
   io: CliIo,
 ): Promise<number> {
   let capturedOutput = "";
-  program
-    .exitOverride()
-    .showHelpAfterError(false)
-    .showSuggestionAfterError(false)
-    .configureOutput({
-      writeOut: (value) => {
-        capturedOutput += value;
-      },
-      writeErr: () => undefined,
-    });
+  configureCommandTree(program, {
+    writeOut: (value) => {
+      capturedOutput += value;
+    },
+    writeErr: () => undefined,
+  });
 
   try {
     await program.parseAsync(["bun", "forgejo", ...argv], { from: "node" });
@@ -94,7 +99,10 @@ export async function executeProgram(
       return 0;
     }
 
-    if (error instanceof CommanderError && error.code === "commander.helpDisplayed") {
+    if (
+      error instanceof CommanderError &&
+      (error.code === "commander.helpDisplayed" || error.code === "commander.help")
+    ) {
       if (usesHumanOutput(program)) {
         io.stdout(`${capturedOutput.trimEnd()}\n`);
         return 0;

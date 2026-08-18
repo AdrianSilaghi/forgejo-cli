@@ -1,9 +1,8 @@
-import type { Readable } from "node:stream";
-
 import type { AuthService } from "../auth/auth-service.js";
 import type { CredentialStore } from "../auth/credential-store.js";
 import type { ForgejoEnvironment } from "../auth/account-resolver.js";
 import { resolveEnvironmentToken } from "../auth/environment-token.js";
+import type { TokenInput, TokenReadOptions } from "../auth/token-input.js";
 import { CliError } from "../core/errors.js";
 import { normalizeOrigin } from "../http/origin.js";
 import type { AuthCommandRuntime } from "./command-runtime.js";
@@ -12,7 +11,7 @@ export type AuthCommandRuntimeAdapterOptions = Readonly<{
   auth: AuthService;
   credentials: CredentialStore;
   environment: ForgejoEnvironment;
-  stdin: Readable;
+  tokenInput: TokenInput;
 }>;
 
 type AuthStatusEntry = Readonly<{
@@ -24,16 +23,20 @@ type AuthStatusEntry = Readonly<{
 }>;
 
 export class AuthCommandRuntimeAdapter implements AuthCommandRuntime {
-  public readonly stdin: Readable;
   readonly #auth: AuthService;
   readonly #credentials: CredentialStore;
   readonly #environment: ForgejoEnvironment;
+  readonly #tokenInput: TokenInput;
 
   public constructor(options: AuthCommandRuntimeAdapterOptions) {
     this.#auth = options.auth;
     this.#credentials = options.credentials;
     this.#environment = Object.freeze({ ...options.environment });
-    this.stdin = options.stdin;
+    this.#tokenInput = options.tokenInput;
+  }
+
+  public async readToken(options: TokenReadOptions): Promise<string> {
+    return this.#tokenInput.read(options);
   }
 
   public async login(input: { host: string; token: string }) {
