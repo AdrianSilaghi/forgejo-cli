@@ -55,11 +55,11 @@ export async function collectPages<T>(
   let hasNextPage = false;
 
   while (items.length < maxItems) {
-    const requestLimit = Math.min(options.limit, maxItems - items.length);
-    const received = await fetchPage(page, requestLimit);
-    const accepted = received.slice(0, requestLimit);
+    const remaining = maxItems - items.length;
+    const received = await fetchPage(page, options.limit);
+    const accepted = received.slice(0, remaining);
     items = Object.freeze([...items, ...accepted]);
-    hasNextPage = received.length >= requestLimit;
+    hasNextPage = received.length > accepted.length || received.length >= options.limit;
     if (!hasNextPage || accepted.length === 0) break;
     page += 1;
   }

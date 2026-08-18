@@ -1,9 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { Command } from "commander";
-
-import type { LabelOperations } from "../../../src/forgejo/label-service.js";
 import { executeProgram } from "../../../src/cli/execute.js";
 import { registerLabelCommands } from "../../../src/commands/label-commands.js";
+import type { LabelOperations } from "../../../src/forgejo/label-service.js";
 
 describe("paginated list commands", () => {
   it("fetches bounded pages and returns explicit JSON pagination metadata", async () => {
@@ -48,7 +47,7 @@ describe("paginated list commands", () => {
     expect(exitCode).toBe(0);
     expect(calls).toEqual([
       { page: 2, limit: 2 },
-      { page: 3, limit: 1 },
+      { page: 3, limit: 2 },
     ]);
     expect(JSON.parse(stdout.join(""))).toMatchObject({
       data: {

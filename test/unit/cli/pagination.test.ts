@@ -34,7 +34,7 @@ describe("collectPages", () => {
 
     expect(calls).toEqual([
       { page: 2, limit: 2 },
-      { page: 3, limit: 1 },
+      { page: 3, limit: 2 },
     ]);
     expect(result.items).toHaveLength(3);
     expect(result.pagination).toEqual({
@@ -43,6 +43,47 @@ describe("collectPages", () => {
       itemCount: 3,
       hasNextPage: true,
       truncated: true,
+    });
+  });
+
+  it("keeps the page size stable when max-items ends inside a later page", async () => {
+    const issueNumbers = Object.freeze([397, 396, 395, 394]);
+    const calls: unknown[] = [];
+    const result = await collectPages(
+      async (page, limit) => {
+        calls.push({ page, limit });
+        const offset = (page - 1) * limit;
+        return issueNumbers.slice(offset, offset + limit);
+      },
+      { page: 1, limit: 2, paginate: true, maxItems: 3 },
+    );
+
+    expect({ calls, items: result.items }).toEqual({
+      calls: [
+        { page: 1, limit: 2 },
+        { page: 2, limit: 2 },
+      ],
+      items: [397, 396, 395],
+    });
+  });
+
+  it("reports truncation when max-items omits entries from a short page", async () => {
+    const result = await collectPages(async () => Object.freeze([1, 2, 3, 4]), {
+      page: 1,
+      limit: 5,
+      paginate: true,
+      maxItems: 3,
+    });
+
+    expect(result).toEqual({
+      items: [1, 2, 3],
+      pagination: {
+        page: 1,
+        limit: 5,
+        itemCount: 3,
+        hasNextPage: true,
+        truncated: true,
+      },
     });
   });
 });
