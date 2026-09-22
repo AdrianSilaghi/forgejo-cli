@@ -312,6 +312,30 @@ describe("IssueService", () => {
     await expect(service.view(repository, 12)).rejects.toMatchObject({ code: "protocol_failed" });
   });
 
+  it("accepts issues and comments from Forgejo's system users, whose ids are not positive", async () => {
+    // Issues migrated from another forge belong to the Ghost user (-1), and
+    // Forgejo Actions posts as its own user (-2). Rejecting them broke every
+    // listing that reached a migrated issue.
+    const ghost = { id: -1, login: "Ghost", full_name: "" };
+    const actions = { id: -2, login: "forgejo-actions", full_name: "" };
+    const api = new FakeApi([issueResponse({ user: ghost, assignees: [ghost] })], {
+      id: 56,
+      body: "Build failed.",
+      html_url: "https://git.example.com/acme/widget/issues/12#issuecomment-56",
+      user: actions,
+      created_at: "2026-08-03T00:00:00Z",
+      updated_at: "2026-08-03T00:00:00Z",
+    });
+    const service = new IssueService(api);
+
+    const issues = await service.list(repository);
+    const comment = await service.comment(repository, 12, "Build failed.");
+
+    expect(issues[0]?.author).toEqual({ id: -1, login: "Ghost", fullName: "" });
+    expect(issues[0]?.assignees).toEqual([{ id: -1, login: "Ghost", fullName: "" }]);
+    expect(comment.author).toEqual({ id: -2, login: "forgejo-actions", fullName: "" });
+  });
+
   it("validates repository, numeric IDs, pagination, and edit inputs before requesting", async () => {
     const api = new FakeApi();
     const service = new IssueService(api);
