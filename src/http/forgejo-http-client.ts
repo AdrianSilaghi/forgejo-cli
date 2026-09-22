@@ -4,7 +4,14 @@ import type {
   ForgejoApi,
   ForgejoAssetUpload,
   ForgejoAssetUploader,
+  ForgejoDownload,
+  ForgejoDownloader,
+  ForgejoDownloadRequest,
   ForgejoRequest,
+  ForgejoText,
+  ForgejoTextReader,
+  ForgejoTextRequest,
+  HttpMethod,
   QueryValue,
 } from "./forgejo-api.js";
 import { normalizeOrigin } from "./origin.js";
@@ -14,6 +21,8 @@ export type ForgejoHttpClientOptions = Readonly<{
   token: string;
   fetch?: typeof globalThis.fetch;
   timeoutMs?: number;
+  /** Whole-transfer limit for archive downloads, which outlive a normal request. */
+  downloadTimeoutMs?: number;
   maxResponseBytes?: number;
   allowInsecureLocalhost?: boolean;
 }>;
@@ -23,6 +32,24 @@ const MAX_REDIRECTS = 3;
 const MAX_TOKEN_BYTES = 4096;
 const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_CONFIGURED_RESPONSE_BYTES = 64 * 1024 * 1024;
+const DEFAULT_DOWNLOAD_TIMEOUT_MS = 15 * 60_000;
+const CONTENT_RANGE = /^bytes \d+-\d+\/(\d+|\*)$/u;
+
+type SendInput = Readonly<{
+  method: HttpMethod;
+  url: string;
+  headers: Headers;
+  body?: string;
+  signal: AbortSignal;
+  callerSignal: AbortSignal | undefined;
+  timeout: AbortSignal;
+}>;
+
+type ReadGuard = Readonly<{
+  callerSignal: AbortSignal | undefined;
+  timeout: AbortSignal;
+  retryable: boolean;
+}>;
 
 function errorCodeForStatus(status: number): ErrorCode {
   if (status === 401) return "not_authenticated";
@@ -56,11 +83,27 @@ function buildUrl(
   const encodedPath = path.map((segment) => encodeURIComponent(segment)).join("/");
   const url = new URL(`/api/v1/${encodedPath}`, origin);
   for (const [key, value] of Object.entries(query ?? {})) {
-    if (value !== undefined) {
+    if (isStringList(value)) {
+      for (const entry of value) url.searchParams.append(key, entry);
+    } else if (value !== undefined) {
       url.searchParams.append(key, String(value));
     }
   }
   return url.toString();
+}
+
+function isStringList(value: QueryValue): value is readonly string[] {
+  return Array.isArray(value);
+}
+
+function parseByteCount(value: string | null | undefined): number | null {
+  if (value === null || value === undefined || !/^\d+$/u.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function totalFromContentRange(value: string | null): number | null {
+  return value === null ? null : parseByteCount(CONTENT_RANGE.exec(value.trim())?.[1]);
 }
 
 function parseRedirectLocation(location: string, currentUrl: string): URL {
@@ -130,31 +173,31 @@ async function responseData(response: Response, maxBytes: number): Promise<unkno
   return text;
 }
 
-async function guardedResponseData(input: {
-  response: Response;
-  maxBytes: number;
-  callerSignal: AbortSignal | undefined;
-  timeout: AbortSignal;
-  retryable: boolean;
-}): Promise<unknown> {
+async function guardedRead<T>(guard: ReadGuard, read: () => Promise<T>): Promise<T> {
   try {
-    return await responseData(input.response, input.maxBytes);
+    return await read();
   } catch (cause) {
     if (cause instanceof CliError) throw cause;
-    if (input.callerSignal?.aborted === true) {
+    if (guard.callerSignal?.aborted === true) {
       throw new CliError("cancelled", "Forgejo response was cancelled.", { cause });
     }
-    if (input.timeout.aborted) {
+    if (guard.timeout.aborted) {
       throw new CliError("timeout", "Forgejo response timed out.", {
-        retryable: input.retryable,
+        retryable: guard.retryable,
         cause,
       });
     }
     throw new CliError("network_failed", "Unable to read the Forgejo response.", {
-      retryable: input.retryable,
+      retryable: guard.retryable,
       cause,
     });
   }
+}
+
+async function guardedResponseData(
+  input: ReadGuard & Readonly<{ response: Response; maxBytes: number }>,
+): Promise<unknown> {
+  return guardedRead(input, () => responseData(input.response, input.maxBytes));
 }
 
 async function cancelResponseBody(response: Response): Promise<void> {
@@ -175,11 +218,14 @@ function assertSafeAssetName(value: string): void {
   }
 }
 
-export class ForgejoHttpClient implements ForgejoApi, ForgejoAssetUploader {
+export class ForgejoHttpClient
+  implements ForgejoApi, ForgejoAssetUploader, ForgejoTextReader, ForgejoDownloader
+{
   readonly #origin: string;
   readonly #token: string;
   readonly #fetch: typeof globalThis.fetch;
   readonly #timeoutMs: number;
+  readonly #downloadTimeoutMs: number;
   readonly #maxResponseBytes: number;
 
   public constructor(options: ForgejoHttpClientOptions) {
@@ -202,6 +248,10 @@ export class ForgejoHttpClient implements ForgejoApi, ForgejoAssetUploader {
     this.#timeoutMs = options.timeoutMs ?? 30_000;
     if (!Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs < 1) {
       throw new CliError("validation_failed", "Forgejo request timeout is invalid.");
+    }
+    this.#downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
+    if (!Number.isSafeInteger(this.#downloadTimeoutMs) || this.#downloadTimeoutMs < 1) {
+      throw new CliError("validation_failed", "Forgejo download timeout is invalid.");
     }
     this.#maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
     if (
@@ -227,33 +277,125 @@ export class ForgejoHttpClient implements ForgejoApi, ForgejoAssetUploader {
 
     const timeout = AbortSignal.timeout(this.#timeoutMs);
     const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
-    let currentUrl = url;
+    const response = await this.#send({
+      method: request.method,
+      url,
+      headers,
+      ...(body === undefined ? {} : { body }),
+      signal,
+      callerSignal: request.signal,
+      timeout,
+    });
+    return guardedResponseData({
+      response,
+      maxBytes: this.#maxResponseBytes,
+      callerSignal: request.signal,
+      timeout,
+      retryable: request.method === "GET" || request.method === "HEAD",
+    });
+  }
+
+  public async readText(request: ForgejoTextRequest): Promise<ForgejoText> {
+    if (
+      request.tailBytes !== undefined &&
+      (!Number.isSafeInteger(request.tailBytes) || request.tailBytes < 1)
+    ) {
+      throw new CliError(
+        "validation_failed",
+        "The requested tail size must be a positive integer.",
+      );
+    }
+    const url = buildUrl(this.#origin, request.path, request.query);
+    const headers = new Headers({
+      accept: "text/plain",
+      authorization: `token ${this.#token}`,
+    });
+    if (request.tailBytes !== undefined) {
+      headers.set("range", `bytes=-${request.tailBytes}`);
+    }
+
+    const timeout = AbortSignal.timeout(this.#timeoutMs);
+    const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
+    const response = await this.#send({
+      method: "GET",
+      url,
+      headers,
+      signal,
+      callerSignal: request.signal,
+      timeout,
+    });
+    const text = await guardedRead({ callerSignal: request.signal, timeout, retryable: true }, () =>
+      responseText(response, this.#maxResponseBytes),
+    );
+    const partial = response.status === 206;
+    return Object.freeze({
+      text,
+      partial,
+      totalBytes: partial
+        ? totalFromContentRange(response.headers.get("content-range"))
+        : Buffer.byteLength(text, "utf8"),
+    });
+  }
+
+  public async download(request: ForgejoDownloadRequest): Promise<ForgejoDownload> {
+    const url = buildUrl(this.#origin, request.path, request.query);
+    const headers = new Headers({
+      accept: "*/*",
+      authorization: `token ${this.#token}`,
+    });
+    const timeout = AbortSignal.timeout(this.#downloadTimeoutMs);
+    const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
+    const response = await this.#send({
+      method: "GET",
+      url,
+      headers,
+      signal,
+      callerSignal: request.signal,
+      timeout,
+    });
+    if (response.body === null) {
+      throw new CliError("protocol_failed", "Forgejo returned a download without a body.");
+    }
+    return Object.freeze({
+      body: response.body,
+      contentType: response.headers.get("content-type"),
+      declaredBytes: parseByteCount(response.headers.get("content-length")),
+    });
+  }
+
+  /**
+   * Sends one request and follows only same-origin redirects, so the token never
+   * leaves the configured origin. Returns the first non-redirect success.
+   */
+  async #send(input: SendInput): Promise<Response> {
+    const readOnly = input.method === "GET" || input.method === "HEAD";
+    let currentUrl = input.url;
 
     for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
       let response: Response;
       try {
         response = await this.#fetch(currentUrl, {
-          method: request.method,
-          headers,
-          ...(body === undefined ? {} : { body }),
+          method: input.method,
+          headers: input.headers,
+          ...(input.body === undefined ? {} : { body: input.body }),
           redirect: "manual",
-          signal,
+          signal: input.signal,
         });
       } catch (cause) {
-        if (request.signal?.aborted === true) {
+        if (input.callerSignal?.aborted === true) {
           throw new CliError("cancelled", "Forgejo request was cancelled.", {
             retryable: false,
             cause,
           });
         }
-        if (timeout.aborted) {
+        if (input.timeout.aborted) {
           throw new CliError("timeout", "Forgejo request timed out.", {
-            retryable: request.method === "GET" || request.method === "HEAD",
+            retryable: readOnly,
             cause,
           });
         }
         throw new CliError("network_failed", "Unable to reach the Forgejo server.", {
-          retryable: request.method === "GET" || request.method === "HEAD",
+          retryable: readOnly,
           cause,
         });
       }
@@ -264,7 +406,7 @@ export class ForgejoHttpClient implements ForgejoApi, ForgejoAssetUploader {
         if (!location) {
           throw new CliError("protocol_failed", "Forgejo returned a redirect without a location.");
         }
-        if (request.method !== "GET" && request.method !== "HEAD") {
+        if (!readOnly) {
           throw new CliError(
             "protocol_failed",
             "Refusing to replay a mutating request after redirect.",
@@ -291,20 +433,13 @@ export class ForgejoHttpClient implements ForgejoApi, ForgejoAssetUploader {
       if (!response.ok) {
         await cancelResponseBody(response);
         const code = errorCodeForStatus(response.status);
-        const readOnly = request.method === "GET" || request.method === "HEAD";
         throw new CliError(code, `Forgejo request failed with HTTP ${response.status}.`, {
           retryable: readOnly && (code === "rate_limited" || code === "server_failed"),
           details: { http_status: response.status },
         });
       }
 
-      return guardedResponseData({
-        response,
-        maxBytes: this.#maxResponseBytes,
-        callerSignal: request.signal,
-        timeout,
-        retryable: request.method === "GET" || request.method === "HEAD",
-      });
+      return response;
     }
 
     throw new CliError("protocol_failed", "Forgejo redirect handling failed.");

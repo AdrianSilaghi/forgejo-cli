@@ -1,11 +1,12 @@
-import type { ResolvedAccount } from "../auth/account-resolver.js";
-import type { ForgejoEnvironment } from "../auth/account-resolver.js";
+import type { ForgejoEnvironment, ResolvedAccount } from "../auth/account-resolver.js";
+import type { ArtifactOperations } from "../forgejo/artifact-service.js";
 import type { IssueOperations } from "../forgejo/issue-service.js";
 import type { LabelOperations } from "../forgejo/label-service.js";
 import type { MilestoneOperations } from "../forgejo/milestone-service.js";
 import type { PullRequestOperations } from "../forgejo/pull-request-service.js";
 import type { ReleaseOperations } from "../forgejo/release-service.js";
 import type { RepositoryOperations } from "../forgejo/repository-service.js";
+import type { WorkflowRunOperations } from "../forgejo/workflow-run-service.js";
 import type { RepositoryContext } from "../git/repository-context.js";
 import { compactDefined } from "./command-options.js";
 import type {
@@ -21,6 +22,8 @@ export type ForgejoServiceBundle = Readonly<{
   labels: LabelOperations;
   milestones: MilestoneOperations;
   releases: ReleaseOperations;
+  workflowRuns: WorkflowRunOperations;
+  artifacts: ArtifactOperations;
 }>;
 
 export interface RepositoryContextPort {

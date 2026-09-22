@@ -46,6 +46,9 @@ function buildAuthProgram(
     labels: {} as BuildProgramDependencies["labels"],
     milestones: {} as BuildProgramDependencies["milestones"],
     releases: {} as BuildProgramDependencies["releases"],
+    runs: {} as BuildProgramDependencies["runs"],
+    workflows: {} as BuildProgramDependencies["workflows"],
+    artifacts: {} as BuildProgramDependencies["artifacts"],
   });
 }
 
@@ -74,12 +77,26 @@ describe("buildProgram", () => {
       "label",
       "milestone",
       "release",
+      "run",
+      "workflow",
+      "artifact",
     ]);
-    expect(
+    const subcommands = (name: string) =>
       program.commands
-        .find((command) => command.name() === "release")
-        ?.commands.map((command) => command.name()),
-    ).toEqual(["list", "view", "create", "edit", "delete", "upload"]);
+        .find((command) => command.name() === name)
+        ?.commands.map((command) => command.name());
+    expect(subcommands("release")).toEqual(["list", "view", "create", "edit", "delete", "upload"]);
+    expect(subcommands("run")).toEqual([
+      "list",
+      "view",
+      "jobs",
+      "logs",
+      "download-logs",
+      "cancel",
+      "delete",
+    ]);
+    expect(subcommands("workflow")).toEqual(["dispatch"]);
+    expect(subcommands("artifact")).toEqual(["list", "view", "download", "delete"]);
     expect(program.options.map((option) => option.long)).toEqual([
       "--version",
       "--host",
