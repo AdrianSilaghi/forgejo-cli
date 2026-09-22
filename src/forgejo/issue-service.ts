@@ -91,7 +91,9 @@ const listOptionsSchema = z.strictObject({
 });
 
 const userResponseSchema = z.object({
-  id: stableIdSchema,
+  // Forgejo system users have ids below 1: the Ghost owner of migrated issues is
+  // -1 and the Actions bot is -2. The pull-request schema already allows them.
+  id: z.number().int(),
   login: z.string(),
   full_name: z.string().optional().default(""),
 });
