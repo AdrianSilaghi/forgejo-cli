@@ -1,12 +1,14 @@
 import type { AuthenticatedUser } from "../auth/auth-service.js";
 import type { TokenReadOptions } from "../auth/token-input.js";
 import type { AccountMetadata } from "../config/config-repository.js";
+import type { ArtifactOperations } from "../forgejo/artifact-service.js";
 import type { IssueOperations } from "../forgejo/issue-service.js";
 import type { LabelOperations } from "../forgejo/label-service.js";
 import type { MilestoneOperations } from "../forgejo/milestone-service.js";
 import type { PullRequestOperations } from "../forgejo/pull-request-service.js";
 import type { ReleaseOperations } from "../forgejo/release-service.js";
 import type { RepositoryOperations, RepositoryRef } from "../forgejo/repository-service.js";
+import type { WorkflowRunOperations } from "../forgejo/workflow-run-service.js";
 
 export type RepositorySelection = Readonly<{
   host?: string;
@@ -66,4 +68,12 @@ export type MilestoneServices = Readonly<{
 
 export type ReleaseServices = Readonly<{
   releases: ReleaseOperations;
+}>;
+
+export type WorkflowRunServices = Readonly<{
+  workflowRuns: WorkflowRunOperations;
+}>;
+
+export type ArtifactServices = Readonly<{
+  artifacts: ArtifactOperations;
 }>;

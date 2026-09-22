@@ -6,16 +6,19 @@ import { PlatformCredentialStore } from "../auth/platform-credential-store.js";
 import { ReadlineHiddenTokenPrompt, SecureTokenInput } from "../auth/token-input.js";
 import { BunAssetFileSource } from "../cli/asset-file.js";
 import { AuthCommandRuntimeAdapter } from "../cli/auth-command-runtime.js";
-import { buildProgram, type BuildProgramDependencies } from "../cli/build-program.js";
+import { type BuildProgramDependencies, buildProgram } from "../cli/build-program.js";
+import { BunDownloadFileTarget } from "../cli/download-file.js";
 import { RepositorySessionFactory } from "../cli/repository-session-factory.js";
 import { ConfigRepository } from "../config/config-repository.js";
 import { resolveConfigPath } from "../config/paths.js";
+import { ArtifactService } from "../forgejo/artifact-service.js";
 import { IssueService } from "../forgejo/issue-service.js";
 import { LabelService } from "../forgejo/label-service.js";
 import { MilestoneService } from "../forgejo/milestone-service.js";
 import { PullRequestService } from "../forgejo/pull-request-service.js";
 import { ReleaseService } from "../forgejo/release-service.js";
 import { RepositoryService } from "../forgejo/repository-service.js";
+import { WorkflowRunService } from "../forgejo/workflow-run-service.js";
 import { LocalGitBranchReader } from "../git/local-git-branch-reader.js";
 import { LocalGitRepositoryReader } from "../git/local-git-repository-reader.js";
 import { RepositoryContextResolver } from "../git/repository-context.js";
@@ -36,6 +39,8 @@ function serviceBundle(origin: string, token: string) {
     labels: new LabelService(api),
     milestones: new MilestoneService(api),
     releases: new ReleaseService(api, api),
+    workflowRuns: new WorkflowRunService(api, api, api),
+    artifacts: new ArtifactService(api, api),
   });
 }
 
@@ -71,6 +76,7 @@ export function createApplicationDependencies(
   const resolve = session.resolve.bind(session);
   const detect = session.detect.bind(session);
   const files = new BunAssetFileSource();
+  const downloads = new BunDownloadFileTarget();
 
   return Object.freeze({
     auth: new AuthCommandRuntimeAdapter({ auth, credentials, environment, tokenInput }),
@@ -80,6 +86,9 @@ export function createApplicationDependencies(
     labels: Object.freeze({ resolve }),
     milestones: Object.freeze({ resolve }),
     releases: Object.freeze({ resolve, stdin, files }),
+    runs: Object.freeze({ resolve, files: downloads }),
+    workflows: Object.freeze({ resolve }),
+    artifacts: Object.freeze({ resolve, files: downloads }),
   });
 }
 

@@ -198,6 +198,32 @@ forgejo release upload 42 ./artifacts/forgejo-linux-x64 \
 Release upload sends a fixed same-origin multipart request and does not replay
 the mutation across redirects.
 
+## Actions
+
+Runs are addressed by the number in their web URL (`…/actions/runs/1499`), and
+jobs by their 0-based index in that run (`…/runs/1499/jobs/0`). Listing and
+viewing runs and `workflow dispatch` work on Forgejo 15; everything else needs
+the Actions API that Forgejo 16 added.
+
+```bash
+forgejo run list --status failure --branch main --limit 5
+forgejo run view 1499
+forgejo run jobs 1499
+forgejo run logs 1499 --job 0 --tail-bytes 20000   # the end of the log, where failures are
+forgejo --human run logs 1499                       # the raw log instead of JSON
+forgejo run download-logs 1499 --output ./run-1499-logs.zip
+forgejo run cancel 1499
+forgejo workflow dispatch build.yml --ref main --input environment=staging
+forgejo artifact list --run 1499
+forgejo artifact download 77 --output ./coverage.zip
+```
+
+`workflow dispatch` returns the run it started, so its `number` feeds straight
+into `run logs`. A job that no runner has picked up yet reports
+`started: false` with an empty log rather than an error. Log text is redacted
+like every other output. Downloads never overwrite an existing file or follow a
+symlink, and are capped at 2 GiB.
+
 ## Destructive operations
 
 Deletion never relies on auto-detected repository context. For label ID `7`:
@@ -209,7 +235,8 @@ forgejo --repo owner/project label delete 7 \
 ```
 
 Milestone and release deletion use `milestone:<id>` and `release:<id>` in the
-same confirmation format.
+same confirmation format; run and artifact deletion use `run:<number>` and
+`artifact:<id>`.
 
 ## Development
 
