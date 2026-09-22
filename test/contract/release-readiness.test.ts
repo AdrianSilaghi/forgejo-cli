@@ -92,7 +92,7 @@ describe("release readiness", () => {
 
     expect(manifest).toMatchObject({
       name: "@danubedata/forgejo-cli",
-      version: "0.1.0",
+      version: "0.1.1",
       license: "MIT",
       bin: { forgejo: "dist/bin/forgejo.js" },
       repository: {
