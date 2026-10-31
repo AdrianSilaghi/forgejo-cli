@@ -5,7 +5,14 @@ import type { RepositoryCommandRuntime, WorkflowRunServices } from "../cli/comma
 import type { DownloadFileTarget } from "../cli/download-file.js";
 import { returnJson, returnResult } from "../cli/execute.js";
 import { collectPages } from "../cli/pagination.js";
+import {
+  type PollingRuntime,
+  pollingOptions,
+  pollUntil,
+  type RawPollingOptions,
+} from "../cli/polling.js";
 import { CliError } from "../core/errors.js";
+import { checkState } from "../forgejo/pull-request-checks-service.js";
 import {
   type ListWorkflowRunsOptions,
   WORKFLOW_RUN_STATUSES,
@@ -24,7 +31,11 @@ import {
 } from "./repository-command.js";
 
 type RunRuntime = RepositoryCommandRuntime<WorkflowRunServices> &
-  Readonly<{ files: DownloadFileTarget }>;
+  Readonly<{
+    files: DownloadFileTarget;
+    progress?: (text: string) => void;
+    polling?: PollingRuntime;
+  }>;
 
 type RunListOptions = RawPaginationOptions &
   Readonly<{
@@ -37,7 +48,8 @@ type RunListOptions = RawPaginationOptions &
   }>;
 
 type RunLogOptions = Readonly<{
-  job: string;
+  job?: string;
+  failed?: boolean;
   attempt?: string;
   tailBytes?: string;
 }>;
@@ -124,6 +136,36 @@ export function registerRunCommands(program: Command, runtime: RunRuntime): void
     });
 
   run
+    .command("watch <number>")
+    .description("Watch until a run completes; waiting and unknown states remain pending")
+    .option("--exit-status", "Exit with status 10 if the run did not succeed")
+    .option("--interval <seconds>", "Poll interval in seconds (maximum 3600)", "3")
+    .option("--timeout <seconds>", "Watch timeout in seconds (maximum 86400)", "300")
+    .action(
+      async (
+        value: string,
+        options: RawPollingOptions & { exitStatus?: boolean },
+        command: Command,
+      ) => {
+        const number = runNumber(value);
+        const polling = pollingOptions(options);
+        const resolved = await runtime.resolve(selectionFor(command));
+        const result = await pollUntil(
+          (signal) => resolved.services.workflowRuns.view(resolved.repository, number, signal),
+          (current) => checkState(current.status) !== "pending",
+          polling,
+          runtime.polling,
+          (current) => runtime.progress?.(`Run #${number}: ${current.status}`),
+        );
+        returnResult(
+          result,
+          `Run #${number}: ${result.status}`,
+          options.exitStatus && checkState(result.status) === "failure" ? 10 : 0,
+        );
+      },
+    );
+
+  run
     .command("jobs <number>")
     .description(`List a run's jobs with their indexes ${NEEDS_FORGEJO_16}`)
     .action(async (value: string, _options: unknown, command: Command) => {
@@ -135,23 +177,51 @@ export function registerRunCommands(program: Command, runtime: RunRuntime): void
   run
     .command("logs <number>")
     .description(`Print one job's log; --human prints the raw text ${NEEDS_FORGEJO_16}`)
-    .option("--job <index>", "0-based job index, as in …/runs/<number>/jobs/<index>", "0")
+    .option("--job <index>", "0-based job index, as in …/runs/<number>/jobs/<index>")
+    .option(
+      "--failed",
+      "Read failed jobs only, with bounded log tails (64 KiB default, 1 MiB maximum)",
+    )
     .option("--attempt <number>", "Attempt to read; defaults to the latest")
     .option("--tail-bytes <bytes>", "Return only the last N bytes, where failures usually are")
     .action(async (value: string, options: RunLogOptions, command: Command) => {
       const number = runNumber(value);
+      if (options.failed && (options.job !== undefined || options.attempt !== undefined)) {
+        throw new CliError("validation_failed", "Use --failed without --job or --attempt.");
+      }
+      const tailBytes =
+        options.tailBytes === undefined
+          ? undefined
+          : parsePositiveInteger(options.tailBytes, "tail bytes");
+      if (options.failed && tailBytes !== undefined && tailBytes > 1_048_576) {
+        throw new CliError(
+          "validation_failed",
+          "Failed-job log tails must not exceed 1048576 bytes.",
+        );
+      }
       const logOptions = compactDefined({
-        job: jobIndex(options.job),
+        job: jobIndex(options.job ?? "0"),
         attempt:
           options.attempt === undefined
             ? undefined
             : parsePositiveInteger(options.attempt, "attempt"),
-        tailBytes:
-          options.tailBytes === undefined
-            ? undefined
-            : parsePositiveInteger(options.tailBytes, "tail bytes"),
+        tailBytes,
       });
       const resolved = await runtime.resolve(selectionFor(command));
+      if (options.failed) {
+        const result = await resolved.services.workflowRuns.readFailedJobLogs(
+          resolved.repository,
+          number,
+          compactDefined({ tailBytes }),
+        );
+        const human =
+          result.logs.length === 0
+            ? `Run #${number} has no failed jobs.`
+            : result.logs
+                .map((log) => `Job ${log.job.index} (${log.job.name})\n${humanLog(log)}`)
+                .join("\n\n");
+        returnResult(result, human);
+      }
       const log = await resolved.services.workflowRuns.readJobLog(
         resolved.repository,
         number,

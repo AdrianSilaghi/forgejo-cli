@@ -5,20 +5,27 @@ import type { Command } from "commander";
 import { compactDefined, parseCsv, parsePositiveInteger } from "../cli/command-options.js";
 import type { PullRequestServices, RepositoryCommandRuntime } from "../cli/command-runtime.js";
 import { type ContentInput, readContentInput } from "../cli/content-input.js";
-import { returnJson } from "../cli/execute.js";
+import { returnJson, returnResult } from "../cli/execute.js";
 import { collectPages } from "../cli/pagination.js";
 import { CliError } from "../core/errors.js";
-import type {
-  PullRequestCreateInput,
-  PullRequestListOptions,
-  PullRequestReviewEvent,
+import {
+  type PullRequestCreateInput,
+  type PullRequestListOptions,
+  type PullRequestReviewEvent,
+  parsePullRequestEditInput,
+  parsePullRequestMergeInput,
 } from "../forgejo/pull-request-service.js";
 import {
   paginationOptions,
   type RawPaginationOptions,
   withPaginationOptions,
 } from "./pagination-options.js";
-import { selectionFor } from "./repository-command.js";
+import { resolvePullRequestSelector } from "./pull-request-selector.js";
+import {
+  assertDestructiveCommand,
+  selectionFor,
+  withDestructiveOptions,
+} from "./repository-command.js";
 
 type PullRequestRuntime = RepositoryCommandRuntime<PullRequestServices> &
   Readonly<{ stdin: Readable }>;
@@ -159,27 +166,149 @@ export function registerPullRequestCommands(program: Command, runtime: PullReque
   );
 
   pullRequest
-    .command("view <number>")
+    .command("view [selector]")
     .description("View a pull request")
-    .action(async (number: string, _options: unknown, command: Command) => {
+    .action(async (number: string | undefined, _options: unknown, command: Command) => {
       const resolved = await runtime.resolve(selectionFor(command));
       returnJson(
         await resolved.services.pullRequests.view(
           resolved.repository,
-          parsePositiveInteger(number, "pull request number"),
+          await resolvePullRequestSelector(number, resolved),
         ),
       );
     });
 
   withBodyOptions(
-    pullRequest.command("comment <number>").description("Comment on a pull request"),
-  ).action(async (number: string, options: ContentInput, command: Command) => {
+    pullRequest
+      .command("edit [selector]")
+      .description("Edit a pull request")
+      .option("--title <title>", "Pull request title")
+      .option("--base <branch>", "Base branch")
+      .option("--labels <ids>", "Replace labels with comma-separated numeric IDs; empty clears")
+      .option(
+        "--assignees <logins>",
+        "Replace assignees with comma-separated logins; empty clears",
+      ),
+  ).action(
+    async (
+      value: string | undefined,
+      options: ContentInput & {
+        title?: string;
+        base?: string;
+        labels?: string;
+        assignees?: string;
+      },
+      command: Command,
+    ) => {
+      const body = await optionalBody(options, runtime.stdin);
+      const input = parsePullRequestEditInput(
+        compactDefined({
+          title: options.title,
+          body,
+          base: options.base,
+          labels:
+            options.labels === undefined
+              ? undefined
+              : (options.labels === "" ? [] : parseCsv(options.labels)).map((id) =>
+                  parsePositiveInteger(id, "label ID"),
+                ),
+          assignees:
+            options.assignees === undefined
+              ? undefined
+              : options.assignees === ""
+                ? []
+                : parseCsv(options.assignees),
+        }),
+      );
+      const resolved = await runtime.resolve(selectionFor(command));
+      returnJson(
+        await resolved.services.pullRequests.edit(
+          resolved.repository,
+          await resolvePullRequestSelector(value, resolved),
+          input,
+        ),
+      );
+    },
+  );
+
+  pullRequest
+    .command("diff [selector]")
+    .description("Read a pull request diff")
+    .action(async (value: string | undefined, _options: unknown, command: Command) => {
+      const resolved = await runtime.resolve(selectionFor(command));
+      const diff = await resolved.services.pullRequests.diff(
+        resolved.repository,
+        await resolvePullRequestSelector(value, resolved),
+      );
+      returnResult(diff, diff.text);
+    });
+
+  for (const action of ["close", "reopen"] as const) {
+    pullRequest
+      .command(`${action} [selector]`)
+      .description(`${action === "close" ? "Close" : "Reopen"} a pull request`)
+      .action(async (value: string | undefined, _options: unknown, command: Command) => {
+        const resolved = await runtime.resolve(selectionFor(command));
+        returnJson(
+          await resolved.services.pullRequests[action](
+            resolved.repository,
+            await resolvePullRequestSelector(value, resolved, {
+              state: action === "reopen" ? "closed" : "open",
+            }),
+          ),
+        );
+      });
+  }
+
+  withDestructiveOptions(
+    pullRequest
+      .command("merge <number>")
+      .description("Merge the exact expected pull request head")
+      .requiredOption("--head-sha <sha>", "Expected full head commit SHA")
+      .option("--method <method>", "merge, rebase, rebase-merge, squash, or fast-forward-only")
+      .option("--merge", "Create a merge commit")
+      .option("--squash", "Squash the pull request")
+      .option("--rebase", "Rebase the pull request"),
+  ).action(
+    async (
+      value: string,
+      options: {
+        headSha: string;
+        method?: string;
+        merge?: boolean;
+        squash?: boolean;
+        rebase?: boolean;
+      },
+      command: Command,
+    ) => {
+      const number = parsePositiveInteger(value, "pull request number");
+      const repository = assertDestructiveCommand(command, "pr", number);
+      const methods = [
+        options.method,
+        options.merge ? "merge" : undefined,
+        options.squash ? "squash" : undefined,
+        options.rebase ? "rebase" : undefined,
+      ].filter((method) => method !== undefined);
+      if (methods.length > 1)
+        throw new CliError("validation_failed", "Choose only one merge method.");
+      const input = parsePullRequestMergeInput({
+        method: methods[0] ?? "merge",
+        headSha: options.headSha,
+      });
+      const resolved = await runtime.resolve(selectionFor(command));
+      returnJson(await resolved.services.pullRequests.merge(repository, number, input));
+    },
+  );
+
+  withBodyOptions(
+    pullRequest.command("comment [selector]").description("Comment on a pull request"),
+  ).action(async (number: string | undefined, options: ContentInput, command: Command) => {
     const resolved = await runtime.resolve(selectionFor(command));
     const body = await readContentInput(options, runtime.stdin);
     returnJson(
       await resolved.services.pullRequests.comment(
         resolved.repository,
-        parsePositiveInteger(number, "pull request number"),
+        await resolvePullRequestSelector(number, resolved),
         body,
       ),
     );
@@ -187,7 +316,7 @@ export function registerPullRequestCommands(program: Command, runtime: PullReque
 
   withBodyOptions(
     pullRequest
-      .command("review <number>")
+      .command("review [selector]")
       .description("Submit a pull request review")
       .option("--approve", "Approve the pull request")
       .option("--request-changes", "Request changes")
@@ -195,7 +324,7 @@ export function registerPullRequestCommands(program: Command, runtime: PullReque
       .option("--commit-id <sha>", "Review a specific commit"),
   ).action(
     async (
-      number: string,
+      number: string | undefined,
       options: ContentInput & {
         approve?: boolean;
         requestChanges?: boolean;
@@ -221,7 +350,7 @@ export function registerPullRequestCommands(program: Command, runtime: PullReque
       returnJson(
         await resolved.services.pullRequests.review(
           resolved.repository,
-          parsePositiveInteger(number, "pull request number"),
+          await resolvePullRequestSelector(number, resolved),
           compactDefined({ event: events[0], body, commitId: options.commitId }) as {
             event: PullRequestReviewEvent;
             body?: string;

@@ -1,10 +1,13 @@
 import { Command } from "commander";
 
+import { registerApiCommands } from "../commands/api-commands.js";
 import { registerArtifactCommands } from "../commands/artifact-commands.js";
 import { registerAuthCommands } from "../commands/auth-commands.js";
+import { registerCompletionCommands } from "../commands/completion-commands.js";
 import { registerIssueCommands } from "../commands/issue-commands.js";
 import { registerLabelCommands } from "../commands/label-commands.js";
 import { registerMilestoneCommands } from "../commands/milestone-commands.js";
+import { registerPrChecksCommands } from "../commands/pr-checks-commands.js";
 import { registerPullRequestCommands } from "../commands/pull-request-commands.js";
 import { registerReleaseCommands } from "../commands/release-commands.js";
 import { registerRepositoryCommands } from "../commands/repository-commands.js";
@@ -12,9 +15,11 @@ import { registerRunCommands } from "../commands/run-commands.js";
 import { registerWorkflowCommands } from "../commands/workflow-commands.js";
 
 export type BuildProgramDependencies = Readonly<{
+  api: Parameters<typeof registerApiCommands>[1];
   auth: Parameters<typeof registerAuthCommands>[1];
   repository: Parameters<typeof registerRepositoryCommands>[1];
   pullRequests: Parameters<typeof registerPullRequestCommands>[1];
+  checks: Parameters<typeof registerPrChecksCommands>[1];
   issues: Parameters<typeof registerIssueCommands>[1];
   labels: Parameters<typeof registerLabelCommands>[1];
   milestones: Parameters<typeof registerMilestoneCommands>[1];
@@ -33,11 +38,13 @@ export function buildProgram(dependencies: BuildProgramDependencies): Command {
     .option("-R, --repo <owner/repository>", "Explicit repository")
     .option("--remote <name>", "Local Git remote to inspect", "origin")
     .option("--account <username>", "Configured account username")
-    .option("--human", "Render human-readable output instead of JSON");
+    .option("--human", "Render human-readable output instead of JSON")
+    .option("--fields <fields>", "Comma-separated data fields to return");
 
   registerAuthCommands(program, dependencies.auth);
   registerRepositoryCommands(program, dependencies.repository);
   registerPullRequestCommands(program, dependencies.pullRequests);
+  registerPrChecksCommands(program, dependencies.checks);
   registerIssueCommands(program, dependencies.issues);
   registerLabelCommands(program, dependencies.labels);
   registerMilestoneCommands(program, dependencies.milestones);
@@ -45,5 +52,7 @@ export function buildProgram(dependencies: BuildProgramDependencies): Command {
   registerRunCommands(program, dependencies.runs);
   registerWorkflowCommands(program, dependencies.workflows);
   registerArtifactCommands(program, dependencies.artifacts);
+  registerApiCommands(program, dependencies.api);
+  registerCompletionCommands(program);
   return program;
 }

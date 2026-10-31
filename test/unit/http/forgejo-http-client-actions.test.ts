@@ -127,7 +127,12 @@ describe("ForgejoHttpClient.readText", () => {
       new Response('{"message":"not found"}', { status: 404 }),
       new Response("busy", { status: 503 }),
     );
-    const api = client(fake.fetch);
+    const api = new ForgejoHttpClient({
+      origin: "https://git.example.com",
+      token: "fixture",
+      fetch: fake.fetch,
+      maxRetries: 0,
+    });
 
     await expect(api.readText({ path: ["logs"] })).rejects.toMatchObject({
       code: "not_found",

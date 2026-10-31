@@ -434,3 +434,65 @@ describe("WorkflowRunService mutations and downloads", () => {
     expect(api.calls).toHaveLength(0);
   });
 });
+
+describe("WorkflowRunService.readFailedJobLogs", () => {
+  it("only fetches failed jobs once with bounded tails and preserves their indexes", async () => {
+    const api = new StubApi(runLookup(), [
+      jobResponse(),
+      jobResponse({ id: 1584, status: "failure" }),
+      jobResponse({ id: 1585, status: "waiting", task_id: 0 }),
+      jobResponse({ id: 1586, status: "cancelled" }),
+    ]);
+    const reader = new StubTextReader({ text: "failed\n", partial: true, totalBytes: 99999 });
+    const result = await new WorkflowRunService(api, reader).readFailedJobLogs(repository, 1499);
+    expect(result.logs.map((log) => log.job.index)).toEqual([1]);
+    expect(api.calls).toHaveLength(2);
+    expect(reader.calls).toEqual([
+      {
+        path: ["repos", "acme", "widget", "actions", "jobs", "1584", "logs"],
+        query: { attempt: 1 },
+        tailBytes: 65536,
+      },
+    ]);
+  });
+
+  it("caps each tail and keeps log requests sequential", async () => {
+    const api = new StubApi(
+      runLookup(),
+      Array.from({ length: 6 }, (_, i) => jobResponse({ id: 1600 + i, status: "failure" })),
+    );
+    let active = 0;
+    let peak = 0;
+    const reader: ForgejoTextReader = {
+      readText: async (request) => {
+        active++;
+        peak = Math.max(peak, active);
+        expect(request.tailBytes).toBe(1024);
+        await Promise.resolve();
+        active--;
+        return { text: "fail", partial: false, totalBytes: 4 };
+      },
+    };
+    const result = await new WorkflowRunService(api, reader).readFailedJobLogs(repository, 1499, {
+      tailBytes: 1024,
+    });
+    expect(result.logs).toHaveLength(6);
+    expect(peak).toBe(1);
+    await expect(
+      new WorkflowRunService(api, reader).readFailedJobLogs(repository, 1499, {
+        tailBytes: 1048577,
+      }),
+    ).rejects.toMatchObject({ code: "validation_failed" });
+  });
+});
+
+it("enforces failed-log byte tails locally when the server ignores Range, without splitting UTF-8", async () => {
+  const api = new StubApi(runLookup(), [jobResponse({ status: "failure" })]);
+  const reader = new StubTextReader({ text: "prefix😀more", partial: false, totalBytes: 14 });
+  const result = await new WorkflowRunService(api, reader).readFailedJobLogs(repository, 1499, {
+    tailBytes: 7,
+  });
+  expect(result.logs[0]?.text).toBe("more");
+  expect(new TextEncoder().encode(result.logs[0]?.text).byteLength).toBeLessThanOrEqual(7);
+  expect(result.logs[0]).toMatchObject({ partial: true, totalBytes: 14 });
+});

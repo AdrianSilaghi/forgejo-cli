@@ -316,6 +316,7 @@ describe("ForgejoHttpClient", () => {
       origin: "https://git.example.com",
       token: "fixture",
       fetch: fake.fetch,
+      maxRetries: 0,
     });
 
     try {
@@ -369,6 +370,7 @@ describe("ForgejoHttpClient", () => {
       origin: "https://git.example.com",
       token: "fixture",
       fetch: fake.fetch,
+      maxRetries: 0,
     });
 
     await expect(client.request({ method: "GET", path: ["user"] })).rejects.toMatchObject({

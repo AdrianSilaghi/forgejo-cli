@@ -8,13 +8,17 @@ import { BunAssetFileSource } from "../cli/asset-file.js";
 import { AuthCommandRuntimeAdapter } from "../cli/auth-command-runtime.js";
 import { type BuildProgramDependencies, buildProgram } from "../cli/build-program.js";
 import { BunDownloadFileTarget } from "../cli/download-file.js";
+import { safeTerminalText } from "../cli/human-output.js";
 import { RepositorySessionFactory } from "../cli/repository-session-factory.js";
 import { ConfigRepository } from "../config/config-repository.js";
 import { resolveConfigPath } from "../config/paths.js";
+import { redactString } from "../core/redaction.js";
+import { ApiService } from "../forgejo/api-service.js";
 import { ArtifactService } from "../forgejo/artifact-service.js";
 import { IssueService } from "../forgejo/issue-service.js";
 import { LabelService } from "../forgejo/label-service.js";
 import { MilestoneService } from "../forgejo/milestone-service.js";
+import { PullRequestChecksService } from "../forgejo/pull-request-checks-service.js";
 import { PullRequestService } from "../forgejo/pull-request-service.js";
 import { ReleaseService } from "../forgejo/release-service.js";
 import { RepositoryService } from "../forgejo/repository-service.js";
@@ -28,13 +32,17 @@ export type ApplicationOptions = Readonly<{
   cwd?: string;
   environment?: Readonly<Record<string, string | undefined>>;
   stdin?: Readable;
+  signal?: AbortSignal;
+  progress?: (text: string) => void;
 }>;
 
-function serviceBundle(origin: string, token: string) {
-  const api = new ForgejoHttpClient({ origin, token });
+function serviceBundle(origin: string, token: string, signal?: AbortSignal) {
+  const api = new ForgejoHttpClient({ origin, token, ...(signal ? { signal } : {}) });
   return Object.freeze({
+    api: new ApiService(api),
+    pullRequestChecks: new PullRequestChecksService(api),
     repositories: new RepositoryService(api),
-    pullRequests: new PullRequestService(api),
+    pullRequests: new PullRequestService(api, api),
     issues: new IssueService(api),
     labels: new LabelService(api),
     milestones: new MilestoneService(api),
@@ -71,14 +79,19 @@ export function createApplicationDependencies(
     }),
     accounts: new AccountResolver({ accounts: config, credentials }),
     branches: new LocalGitBranchReader(),
-    serviceFactory: serviceBundle,
+    serviceFactory: (origin, token) => serviceBundle(origin, token, options.signal),
   });
   const resolve = session.resolve.bind(session);
   const detect = session.detect.bind(session);
   const files = new BunAssetFileSource();
   const downloads = new BunDownloadFileTarget();
+  const progressOutput = options.progress ?? ((text: string) => process.stderr.write(`${text}\n`));
+  const progress = (text: string) => progressOutput(safeTerminalText(redactString(text), true));
+  const polling = Object.freeze(options.signal ? { signal: options.signal } : {});
 
   return Object.freeze({
+    api: Object.freeze({ resolve }),
+    checks: Object.freeze({ resolve, progress, polling }),
     auth: new AuthCommandRuntimeAdapter({ auth, credentials, environment, tokenInput }),
     repository: Object.freeze({ resolve, detect }),
     pullRequests: Object.freeze({ resolve, stdin }),
@@ -86,7 +99,7 @@ export function createApplicationDependencies(
     labels: Object.freeze({ resolve }),
     milestones: Object.freeze({ resolve }),
     releases: Object.freeze({ resolve, stdin, files }),
-    runs: Object.freeze({ resolve, files: downloads }),
+    runs: Object.freeze({ resolve, files: downloads, progress, polling }),
     workflows: Object.freeze({ resolve }),
     artifacts: Object.freeze({ resolve, files: downloads }),
   });

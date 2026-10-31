@@ -304,3 +304,145 @@ describe("PullRequestService", () => {
     expect(api.requests).toHaveLength(0);
   });
 });
+
+describe("pull request lifecycle", () => {
+  it("accepts Markdown comments with line breaks and tabs but rejects NUL", async () => {
+    const body = "First line.\n\n- item\tvalue\r\n";
+    const api = new QueueApi({
+      id: 1,
+      body,
+      html_url: "https://git.example.com/comment",
+      user: { id: 1, login: "ada" },
+      created_at: "now",
+      updated_at: "now",
+    });
+    await new PullRequestService(api).comment(repository, 12, body);
+    expect(api.requests[0]?.body).toEqual({ body });
+    await expect(
+      new PullRequestService(api).comment(repository, 12, "bad\0body"),
+    ).rejects.toMatchObject({ code: "validation_failed" });
+    await expect(
+      new PullRequestService(api).comment(repository, 12, " \n\t"),
+    ).rejects.toMatchObject({ code: "validation_failed" });
+  });
+
+  it("edits supported fields and closes/reopens through the PR endpoint", async () => {
+    const api = new QueueApi(pullResponse, pullResponse, pullResponse);
+    const service = new PullRequestService(api);
+    await service.edit(repository, 12, {
+      title: "New title",
+      body: "New\nbody",
+      base: "stable",
+      labels: [3],
+      assignees: ["ada"],
+    });
+    await service.close(repository, 12);
+    await service.reopen(repository, 12);
+    expect(api.requests.map(({ method, path, body }) => ({ method, path, body }))).toEqual([
+      {
+        method: "PATCH",
+        path: ["repos", "acme", "widget", "pulls", "12"],
+        body: {
+          title: "New title",
+          body: "New\nbody",
+          base: "stable",
+          labels: [3],
+          assignees: ["ada"],
+        },
+      },
+      {
+        method: "PATCH",
+        path: ["repos", "acme", "widget", "pulls", "12"],
+        body: { state: "closed" },
+      },
+      {
+        method: "PATCH",
+        path: ["repos", "acme", "widget", "pulls", "12"],
+        body: { state: "open" },
+      },
+    ]);
+    await expect(service.edit(repository, 12, {})).rejects.toMatchObject({
+      code: "validation_failed",
+    });
+  });
+
+  it("reads the bounded API diff through the authenticated text transport", async () => {
+    const requests: unknown[] = [];
+    const text = {
+      readText: async (request: unknown) => {
+        requests.push(request);
+        return { text: "diff --git a/a b/a\n", partial: false, totalBytes: 22 };
+      },
+    };
+    const result = await new PullRequestService(new QueueApi(), text).diff(repository, 12);
+    expect(result.text).toBe("diff --git a/a b/a\n");
+    expect(requests).toEqual([
+      { path: ["repos", "acme", "widget", "pulls", "12.diff"], query: { binary: false } },
+    ]);
+  });
+
+  it("redacts credentials in diff text while retaining transport metadata", async () => {
+    const raw = Object.freeze({
+      text: "+Authorization: Bearer diff-secret\n+https://user:pass@host/path\n",
+      partial: true,
+      totalBytes: 991,
+    });
+    const service = new PullRequestService(new QueueApi(), { readText: async () => raw });
+    const diff = await service.diff(repository, 12);
+    expect(diff).toEqual({
+      text: "+Authorization: [REDACTED]\n+https://[REDACTED]@host/path\n",
+      partial: true,
+      totalBytes: 991,
+    });
+    expect(Object.isFrozen(diff)).toBe(true);
+    expect(raw.text).toContain("diff-secret");
+  });
+
+  it("sends the immutable expected head to Forgejo's merge precondition", async () => {
+    const sha = "a".repeat(40);
+    const api = new QueueApi({ ...pullResponse, head: { ...pullResponse.head, sha } }, null, {
+      ...pullResponse,
+      merged: true,
+      state: "closed",
+      head: { ...pullResponse.head, sha },
+    });
+    const result = await new PullRequestService(api).merge(repository, 12, {
+      method: "squash",
+      headSha: sha,
+    });
+    expect(api.requests[1]).toEqual({
+      method: "POST",
+      path: ["repos", "acme", "widget", "pulls", "12", "merge"],
+      body: {
+        Do: "squash",
+        head_commit_id: sha,
+        force_merge: false,
+        delete_branch_after_merge: false,
+        merge_when_checks_succeed: false,
+      },
+    });
+    expect(result.status).toBe("merged");
+  });
+
+  it("refuses stale, draft, closed and already merged heads before merge", async () => {
+    for (const response of [
+      { ...pullResponse, head: { ...pullResponse.head, sha: "b".repeat(40) } },
+      { ...pullResponse, draft: true },
+      { ...pullResponse, state: "closed" },
+      { ...pullResponse, merged: true },
+    ]) {
+      const api = new QueueApi(
+        response.draft || response.merged || response.state === "closed"
+          ? { ...response, head: { ...response.head, sha: "a".repeat(40) } }
+          : response,
+      );
+      await expect(
+        new PullRequestService(api).merge(repository, 12, {
+          method: "merge",
+          headSha: "a".repeat(40),
+        }),
+      ).rejects.toMatchObject({ code: "conflict" });
+      expect(api.requests).toHaveLength(1);
+    }
+  });
+});
