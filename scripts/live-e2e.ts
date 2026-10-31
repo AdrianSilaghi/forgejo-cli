@@ -9,6 +9,7 @@ import { PlatformCredentialStore } from "../src/auth/platform-credential-store.j
 import { ConfigRepository } from "../src/config/config-repository.js";
 import { resolveConfigPath } from "../src/config/paths.js";
 import { redactString } from "../src/core/redaction.js";
+import { gitCommandEnvironment } from "../src/git/git-command-environment.js";
 import { ForgejoHttpClient } from "../src/http/forgejo-http-client.js";
 import { createLiveFixture, fixtureTarget } from "./live-fixture.js";
 
@@ -86,6 +87,7 @@ async function cli(args: readonly string[], expectedExit = 0, input = "", human 
 
 async function localGit(args: readonly string[]): Promise<void> {
   const child = Bun.spawn(["git", ...args], {
+    env: gitCommandEnvironment(process.env),
     cwd: temporaryDirectory,
     stdout: "ignore",
     stderr: "pipe",

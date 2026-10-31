@@ -1,13 +1,13 @@
+import { describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-import { describe, expect, it } from "bun:test";
+import { gitCommandEnvironment } from "../../../src/git/git-command-environment.js";
 
 import {
   BunGitBranchCommandRunner,
-  LocalGitBranchReader,
   type GitBranchCommandRunner,
+  LocalGitBranchReader,
 } from "../../../src/git/local-git-branch-reader.js";
 
 describe("LocalGitBranchReader", () => {
@@ -83,6 +83,7 @@ describe("LocalGitBranchReader", () => {
       const setup = Bun.spawn(
         ["git", "init", "--quiet", "--initial-branch", "feature/agent", directory],
         {
+          env: gitCommandEnvironment(process.env),
           stderr: "pipe",
         },
       );

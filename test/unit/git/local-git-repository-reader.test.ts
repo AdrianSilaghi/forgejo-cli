@@ -1,13 +1,13 @@
+import { describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-import { describe, expect, it } from "bun:test";
+import { gitCommandEnvironment } from "../../../src/git/git-command-environment.js";
 
 import {
   BunGitCommandRunner,
-  LocalGitRepositoryReader,
   type GitCommandRunner,
+  LocalGitRepositoryReader,
 } from "../../../src/git/local-git-repository-reader.js";
 
 describe("LocalGitRepositoryReader", () => {
@@ -112,17 +112,21 @@ describe("LocalGitRepositoryReader", () => {
   it("uses the production runner to read raw local config without contacting a remote", async () => {
     const directory = await mkdtemp(join(tmpdir(), "forgejo-cli-repository-"));
     try {
-      const initialized = Bun.spawn(["git", "init", "--quiet", directory], { stderr: "pipe" });
+      const env = gitCommandEnvironment(process.env);
+      const initialized = Bun.spawn(["git", "init", "--quiet", directory], { env, stderr: "pipe" });
       expect(await initialized.exited).toBe(0);
-      const configured = Bun.spawn([
-        "git",
-        "-C",
-        directory,
-        "config",
-        "--local",
-        "remote.origin.url",
-        "https://git.example.com/acme/widget.git",
-      ]);
+      const configured = Bun.spawn(
+        [
+          "git",
+          "-C",
+          directory,
+          "config",
+          "--local",
+          "remote.origin.url",
+          "https://git.example.com/acme/widget.git",
+        ],
+        { env },
+      );
       expect(await configured.exited).toBe(0);
 
       await expect(

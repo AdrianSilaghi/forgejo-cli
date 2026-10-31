@@ -36,7 +36,7 @@ runner configuration, credentials and release workflows are outside this change.
 ## Validation
 
 - TDD regressions were observed failing before the corresponding implementations.
-- `bun run verify`: 479 tests, 1,523 assertions, zero failures; 98.64% line and
+- `bun run verify`: 480 tests, 1,526 assertions, zero failures; 98.64% line and
   97.90% function coverage. Formatting, lint, TypeScript, build and audit pass.
 - Upgraded Zod from 4.4.3 to 4.6.7 after audit found GHSA-mrhx-c7xc-m3w5 in the
   existing dependency; the final audit reports no vulnerabilities.
@@ -54,6 +54,9 @@ runner configuration, credentials and release workflows are outside this change.
 - Standalone binary smoke tests and the `forgejo-cli` executable collision check
   pass. Bash/Zsh completion syntax is checked; Fish generation is tested, but a
   Fish interpreter is unavailable on this machine.
+- Version 0.2.0 keeps the package, CLI and release contracts aligned. A subprocess
+  regression verifies Git fixture tests preserve the invoking hook's repository;
+  fixture Git commands discard inherited repository environment variables.
 
 The private test repository is retained as evidence. Its failed workflow is
 intentional. No CLI release or application production deployment is part of this
