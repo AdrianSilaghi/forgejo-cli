@@ -1,6 +1,8 @@
 import { z } from "zod";
 
-import type { ForgejoApi } from "../http/forgejo-api.js";
+import { CliError } from "../core/errors.js";
+import { redactString } from "../core/redaction.js";
+import type { ForgejoApi, ForgejoText, ForgejoTextReader } from "../http/forgejo-api.js";
 import { parseInput, parseResponse } from "./validation.js";
 
 const DEFAULT_PAGE_SIZE = 30;
@@ -18,6 +20,14 @@ const nonEmptyStringSchema = z
   .min(1)
   .refine((value) => value.trim().length > 0, "Value cannot be blank.")
   .refine(isFreeOfAsciiControlCharacters, "Value cannot contain control characters.");
+const bodySchema = z.string().refine(
+  (value) =>
+    Array.from(value).every((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code === 9 || code === 10 || code === 13 || (code > 31 && code !== 127);
+    }),
+  "Body contains unsupported control characters.",
+);
 const pathSegmentSchema = nonEmptyStringSchema
   .refine((value) => value !== "." && value !== "..", "Relative path segments are forbidden.")
   .refine(
@@ -67,6 +77,26 @@ export type PullRequestListOptions = Readonly<{
   head?: string;
   page?: number;
   limit?: number;
+}>;
+
+export type PullRequestEditInput = Readonly<{
+  title?: string;
+  body?: string;
+  base?: string;
+  labels?: readonly number[];
+  assignees?: readonly string[];
+}>;
+
+export type PullRequestMergeInput = Readonly<{
+  method: "merge" | "rebase" | "rebase-merge" | "squash" | "fast-forward-only";
+  headSha: string;
+}>;
+
+export type PullRequestMergeResult = Readonly<{
+  status: "merged";
+  method: PullRequestMergeInput["method"];
+  expectedHeadSha: string;
+  pullRequest: PullRequest;
 }>;
 
 export type PullRequestReviewInput = Readonly<{
@@ -140,6 +170,19 @@ export interface PullRequestOperations {
     options?: PullRequestListOptions,
   ): Promise<readonly PullRequest[]>;
   view(repository: RepositoryRef, number: number): Promise<PullRequest>;
+  edit(
+    repository: RepositoryRef,
+    number: number,
+    input: PullRequestEditInput,
+  ): Promise<PullRequest>;
+  close(repository: RepositoryRef, number: number): Promise<PullRequest>;
+  reopen(repository: RepositoryRef, number: number): Promise<PullRequest>;
+  diff(repository: RepositoryRef, number: number): Promise<ForgejoText>;
+  merge(
+    repository: RepositoryRef,
+    number: number,
+    input: PullRequestMergeInput,
+  ): Promise<PullRequestMergeResult>;
   comment(repository: RepositoryRef, number: number, body: string): Promise<PullRequestComment>;
   review(
     repository: RepositoryRef,
@@ -152,12 +195,47 @@ const createInputSchema = z.strictObject({
   title: nonEmptyStringSchema,
   head: nonEmptyStringSchema,
   base: nonEmptyStringSchema,
-  body: z.string().optional(),
+  body: bodySchema.optional(),
   assignees: z.array(nonEmptyStringSchema).optional(),
   labels: z.array(stableIdSchema).optional(),
   milestone: stableIdSchema.optional(),
   dueDate: nonEmptyStringSchema.optional(),
 });
+
+const editInputSchema = z
+  .strictObject({
+    title: nonEmptyStringSchema.optional(),
+    body: bodySchema.optional(),
+    base: nonEmptyStringSchema.optional(),
+    labels: z.array(stableIdSchema).optional(),
+    assignees: z.array(nonEmptyStringSchema).optional(),
+  })
+  .refine(
+    (input) => Object.values(input).some((value) => value !== undefined),
+    "An edit field is required.",
+  );
+
+const mergeInputSchema = z.strictObject({
+  method: z.enum(["merge", "rebase", "rebase-merge", "squash", "fast-forward-only"]),
+  headSha: z
+    .string()
+    .regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u, "A full lowercase commit SHA is required."),
+});
+
+export function parsePullRequestEditInput(input: unknown): PullRequestEditInput {
+  const parsed = parseInput(editInputSchema, input);
+  return Object.freeze({
+    ...(parsed.title === undefined ? {} : { title: parsed.title }),
+    ...(parsed.body === undefined ? {} : { body: parsed.body }),
+    ...(parsed.base === undefined ? {} : { base: parsed.base }),
+    ...(parsed.labels === undefined ? {} : { labels: Object.freeze([...parsed.labels]) }),
+    ...(parsed.assignees === undefined ? {} : { assignees: Object.freeze([...parsed.assignees]) }),
+  });
+}
+
+export function parsePullRequestMergeInput(input: unknown): PullRequestMergeInput {
+  return Object.freeze(parseInput(mergeInputSchema, input));
+}
 
 const listOptionsSchema = z.strictObject({
   state: z.enum(["open", "closed", "all"]).default("open"),
@@ -182,7 +260,7 @@ const listOptionsSchema = z.strictObject({
 
 const reviewInputSchema = z.strictObject({
   event: z.enum(["APPROVE", "REQUEST_CHANGES", "COMMENT"]),
-  body: z.string().optional(),
+  body: bodySchema.optional(),
   commitId: nonEmptyStringSchema.optional(),
 });
 
@@ -319,9 +397,11 @@ function pullRequestPath(repository: RepositoryRef): readonly string[] {
 
 export class PullRequestService implements PullRequestOperations {
   readonly #api: ForgejoApi;
+  readonly #text: ForgejoTextReader | undefined;
 
-  public constructor(api: ForgejoApi) {
+  public constructor(api: ForgejoApi, text?: ForgejoTextReader) {
     this.#api = api;
+    this.#text = text;
   }
 
   public async create(
@@ -385,6 +465,102 @@ export class PullRequestService implements PullRequestOperations {
     return normalizePullRequest(parseResponse(pullRequestResponseSchema, response));
   }
 
+  public async edit(
+    repository: RepositoryRef,
+    number: number,
+    input: PullRequestEditInput,
+  ): Promise<PullRequest> {
+    return this.#patch(repository, number, parsePullRequestEditInput(input));
+  }
+
+  public async close(repository: RepositoryRef, number: number): Promise<PullRequest> {
+    return this.#patch(repository, number, { state: "closed" });
+  }
+
+  public async reopen(repository: RepositoryRef, number: number): Promise<PullRequest> {
+    return this.#patch(repository, number, { state: "open" });
+  }
+
+  async #patch(repository: RepositoryRef, number: number, body: unknown): Promise<PullRequest> {
+    const path = pullRequestPath(repository);
+    const index = parseInput(stableIdSchema, number);
+    const response = await this.#api.request({
+      method: "PATCH",
+      path: [...path, String(index)],
+      body,
+    });
+    const pull = normalizePullRequest(parseResponse(pullRequestResponseSchema, response));
+    if (pull.number !== index)
+      throw new CliError("protocol_failed", "Forgejo returned a different pull request.");
+    return pull;
+  }
+
+  public async diff(repository: RepositoryRef, number: number): Promise<ForgejoText> {
+    const path = pullRequestPath(repository);
+    const index = parseInput(stableIdSchema, number);
+    if (this.#text === undefined)
+      throw new CliError("config_failed", "The Forgejo diff transport is unavailable.");
+    const diff = await this.#text.readText({
+      path: [...path, `${index}.diff`],
+      query: { binary: false },
+    });
+    return Object.freeze({ ...diff, text: redactString(diff.text) });
+  }
+
+  public async merge(
+    repository: RepositoryRef,
+    number: number,
+    input: PullRequestMergeInput,
+  ): Promise<PullRequestMergeResult> {
+    const path = pullRequestPath(repository);
+    const index = parseInput(stableIdSchema, number);
+    const parsed = parsePullRequestMergeInput(input);
+    const current = await this.view(repository, index);
+    if (current.number !== index)
+      throw new CliError("protocol_failed", "Forgejo returned a different pull request.");
+    if (
+      current.head.sha !== parsed.headSha ||
+      current.draft ||
+      current.merged ||
+      current.state !== "open"
+    ) {
+      throw new CliError(
+        "conflict",
+        "Pull request must be open, ready for review, and at the expected head SHA.",
+      );
+    }
+    const response = await this.#api.request({
+      method: "POST",
+      path: [...path, String(index), "merge"],
+      body: {
+        Do: parsed.method,
+        head_commit_id: parsed.headSha,
+        force_merge: false,
+        delete_branch_after_merge: false,
+        merge_when_checks_succeed: false,
+      },
+    });
+    parseResponse(z.null(), response);
+    const pullRequest = await this.view(repository, index);
+    if (
+      pullRequest.number !== index ||
+      !pullRequest.merged ||
+      pullRequest.head.sha !== parsed.headSha
+    ) {
+      throw new CliError(
+        "protocol_failed",
+        "Forgejo accepted the merge but the merged pull request could not be verified.",
+        { details: { merge_request_accepted: true } },
+      );
+    }
+    return Object.freeze({
+      status: "merged",
+      method: parsed.method,
+      expectedHeadSha: parsed.headSha,
+      pullRequest,
+    });
+  }
+
   public async comment(
     repository: RepositoryRef,
     number: number,
@@ -392,7 +568,10 @@ export class PullRequestService implements PullRequestOperations {
   ): Promise<PullRequestComment> {
     const parsedRepository = parseInput(repositorySchema, repository);
     const parsedNumber = parseInput(stableIdSchema, number);
-    const parsedBody = parseInput(nonEmptyStringSchema, body);
+    const parsedBody = parseInput(
+      bodySchema.refine((value) => value.trim().length > 0, "Body cannot be blank."),
+      body,
+    );
     const response = await this.#api.request({
       method: "POST",
       path: [

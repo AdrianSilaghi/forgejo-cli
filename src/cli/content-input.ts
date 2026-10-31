@@ -70,6 +70,7 @@ export async function readContentInput(
   }
 
   if (input.bodyFile !== undefined) {
+    if (input.bodyFile === "-") return readBounded(stdin, maxBytes);
     if (input.bodyFile.length === 0) {
       throw new CliError("validation_failed", "The body file path cannot be empty.");
     }

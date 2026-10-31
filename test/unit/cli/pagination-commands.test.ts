@@ -10,9 +10,11 @@ describe("paginated list commands", () => {
     const labels = {
       list: async (_repository: unknown, options: { page?: number; limit?: number }) => {
         calls.push(options);
-        return Array.from({ length: options.limit ?? 0 }, (_, index) => ({
-          id: (options.page ?? 0) * 10 + index,
-        }));
+        return (options.page ?? 0) > 3
+          ? []
+          : Array.from({ length: options.limit ?? 0 }, (_, index) => ({
+              id: (options.page ?? 0) * 10 + index,
+            }));
       },
     } as unknown as LabelOperations;
     const program = new Command().name("forgejo").option("-R, --repo <slug>");

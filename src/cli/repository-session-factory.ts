@@ -1,8 +1,10 @@
 import type { ForgejoEnvironment, ResolvedAccount } from "../auth/account-resolver.js";
+import type { ApiOperations } from "../forgejo/api-service.js";
 import type { ArtifactOperations } from "../forgejo/artifact-service.js";
 import type { IssueOperations } from "../forgejo/issue-service.js";
 import type { LabelOperations } from "../forgejo/label-service.js";
 import type { MilestoneOperations } from "../forgejo/milestone-service.js";
+import type { PullRequestChecksOperations } from "../forgejo/pull-request-checks-service.js";
 import type { PullRequestOperations } from "../forgejo/pull-request-service.js";
 import type { ReleaseOperations } from "../forgejo/release-service.js";
 import type { RepositoryOperations } from "../forgejo/repository-service.js";
@@ -16,6 +18,8 @@ import type {
 } from "./command-runtime.js";
 
 export type ForgejoServiceBundle = Readonly<{
+  api: ApiOperations;
+  pullRequestChecks: PullRequestChecksOperations;
   repositories: RepositoryOperations;
   pullRequests: PullRequestOperations;
   issues: IssueOperations;

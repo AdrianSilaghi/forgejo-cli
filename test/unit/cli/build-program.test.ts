@@ -39,6 +39,8 @@ function buildAuthProgram(
   } satisfies AuthCommandRuntime;
 
   return buildProgram({
+    api: {} as BuildProgramDependencies["api"],
+    checks: {} as BuildProgramDependencies["checks"],
     auth,
     repository: {} as BuildProgramDependencies["repository"],
     pullRequests: {} as BuildProgramDependencies["pullRequests"],
@@ -80,6 +82,8 @@ describe("buildProgram", () => {
       "run",
       "workflow",
       "artifact",
+      "api",
+      "completion",
     ]);
     const subcommands = (name: string) =>
       program.commands
@@ -89,6 +93,7 @@ describe("buildProgram", () => {
     expect(subcommands("run")).toEqual([
       "list",
       "view",
+      "watch",
       "jobs",
       "logs",
       "download-logs",
@@ -104,6 +109,7 @@ describe("buildProgram", () => {
       "--remote",
       "--account",
       "--human",
+      "--fields",
     ]);
   });
 

@@ -155,6 +155,10 @@ export type WorkflowJobLog = Readonly<{
   text: string;
 }>;
 
+export type FailedJobLogOptions = Readonly<{ tailBytes?: number }>;
+
+export type FailedJobLogs = Readonly<{ run: WorkflowRunRef; logs: readonly WorkflowJobLog[] }>;
+
 export type WorkflowRunLogArchive = Readonly<{
   run: WorkflowRunRef;
   download: ForgejoDownload;
@@ -173,13 +177,18 @@ export type DispatchedWorkflowRun = Readonly<{
 
 export interface WorkflowRunOperations {
   list(repository: RepositoryRef, options?: ListWorkflowRunsOptions): Promise<WorkflowRunPage>;
-  view(repository: RepositoryRef, number: number): Promise<WorkflowRun>;
+  view(repository: RepositoryRef, number: number, signal?: AbortSignal): Promise<WorkflowRun>;
   jobs(repository: RepositoryRef, number: number): Promise<WorkflowRunJobs>;
   readJobLog(
     repository: RepositoryRef,
     number: number,
     options?: ReadJobLogOptions,
   ): Promise<WorkflowJobLog>;
+  readFailedJobLogs(
+    repository: RepositoryRef,
+    number: number,
+    options?: FailedJobLogOptions,
+  ): Promise<FailedJobLogs>;
   downloadLogs(repository: RepositoryRef, number: number): Promise<WorkflowRunLogArchive>;
   cancel(repository: RepositoryRef, number: number): Promise<WorkflowRunRef>;
   delete(repository: RepositoryRef, number: number): Promise<WorkflowRunRef>;
@@ -252,8 +261,19 @@ export class WorkflowRunService implements WorkflowRunOperations {
     });
   }
 
-  public async view(repository: RepositoryRef, number: number): Promise<WorkflowRun> {
-    return findRunByNumber(this.#api, repository, number);
+  public async view(
+    repository: RepositoryRef,
+    number: number,
+    signal?: AbortSignal,
+  ): Promise<WorkflowRun> {
+    const api =
+      signal === undefined
+        ? this.#api
+        : {
+            request: (request: Parameters<ForgejoApi["request"]>[0]) =>
+              this.#api.request({ ...request, signal }),
+          };
+    return findRunByNumber(api, repository, number);
   }
 
   public async jobs(repository: RepositoryRef, number: number): Promise<WorkflowRunJobs> {
@@ -283,6 +303,16 @@ export class WorkflowRunService implements WorkflowRunOperations {
         details: { job_count: jobs.length },
       });
     }
+    return this.readResolvedJobLog(repository, run, job, parsed);
+  }
+
+  private async readResolvedJobLog(
+    repository: RepositoryRef,
+    run: WorkflowRunRef,
+    job: WorkflowJob,
+    parsed: Readonly<{ attempt?: number | undefined; tailBytes?: number | undefined }>,
+  ): Promise<WorkflowJobLog> {
+    if (this.#text === undefined) throw missingTransport("log");
     const attempt = parsed.attempt ?? job.attempt;
     if (attempt > job.attempt) {
       throw new CliError(
@@ -309,15 +339,39 @@ export class WorkflowRunService implements WorkflowRunOperations {
       query: { attempt },
       ...(parsed.tailBytes === undefined ? {} : { tailBytes: parsed.tailBytes }),
     });
+    const text = redactString(log.text);
+    const bytes = new TextEncoder().encode(text);
+    let start = parsed.tailBytes === undefined ? 0 : Math.max(0, bytes.length - parsed.tailBytes);
+    // A server may ignore Range; keep the tail bounded without cutting a UTF-8 character.
+    while (start < bytes.length && ((bytes[start] ?? 0) & 0xc0) === 0x80) start++;
     return Object.freeze({
       run,
       job,
       attempt,
       started: true,
-      partial: log.partial,
+      partial: log.partial || start > 0,
       totalBytes: log.totalBytes,
-      text: redactString(log.text),
+      text: start === 0 ? text : new TextDecoder().decode(bytes.subarray(start)),
     });
+  }
+
+  public async readFailedJobLogs(
+    repository: RepositoryRef,
+    number: number,
+    options: FailedJobLogOptions = {},
+  ): Promise<FailedJobLogs> {
+    const parsed = parseInput(
+      z.strictObject({ tailBytes: stableIdSchema.max(1_048_576).default(65_536) }),
+      options,
+    );
+    if (this.#text === undefined) throw missingTransport("log");
+    const { run, jobs } = await this.jobs(repository, number);
+    const logs: WorkflowJobLog[] = [];
+    // Sequential requests bound concurrency and keep failure output in job order.
+    for (const job of jobs.filter((item) => item.status === "failure")) {
+      logs.push(await this.readResolvedJobLog(repository, run, job, parsed));
+    }
+    return Object.freeze({ run, logs: Object.freeze(logs) });
   }
 
   public async downloadLogs(

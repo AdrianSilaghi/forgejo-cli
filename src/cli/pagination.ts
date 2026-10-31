@@ -59,8 +59,9 @@ export async function collectPages<T>(
     const received = await fetchPage(page, options.limit);
     const accepted = received.slice(0, remaining);
     items = Object.freeze([...items, ...accepted]);
-    hasNextPage = received.length > accepted.length || received.length >= options.limit;
-    if (!hasNextPage || accepted.length === 0) break;
+    // A server can cap page size; only an empty page proves exhaustion. At the bound, stay conservative.
+    hasNextPage = received.length > 0;
+    if (!hasNextPage) break;
     page += 1;
   }
 
