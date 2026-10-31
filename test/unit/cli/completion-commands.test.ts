@@ -36,7 +36,7 @@ describe("static completion", () => {
     });
   }
   for (const shell of ["bash", "zsh"]) {
-    it(`passes ${shell} syntax validation`, () => {
+    it.skipIf(!Bun.which(shell))(`passes ${shell} syntax validation`, () => {
       const checked = spawnSync(shell, ["-n"], {
         input: generateCompletion(program(), shell),
         encoding: "utf8",
