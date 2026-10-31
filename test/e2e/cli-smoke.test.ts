@@ -38,7 +38,7 @@ describe("forgejo CLI end-to-end smoke", () => {
     expect(JSON.parse(result.stdout)).toEqual({
       schema_version: "1",
       ok: true,
-      data: { version: "0.1.1" },
+      data: { version: "0.2.0" },
     });
   });
 

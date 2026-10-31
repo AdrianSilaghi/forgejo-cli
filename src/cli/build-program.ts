@@ -33,7 +33,7 @@ export function buildProgram(dependencies: BuildProgramDependencies): Command {
   const program = new Command()
     .name("forgejo")
     .description("Agent-first, JSON-first CLI for Forgejo")
-    .version("0.1.1")
+    .version("0.2.0")
     .option("--host <url>", "Exact Forgejo origin")
     .option("-R, --repo <owner/repository>", "Explicit repository")
     .option("--remote <name>", "Local Git remote to inspect", "origin")
